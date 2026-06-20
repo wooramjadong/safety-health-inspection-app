@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 type Finding = {
   id: string;
   section: "서류" | "현장";
-  grade: "위험" | "미흡";
+  grade?: "위험" | "미흡"; // 현장부문만 사용 — 별첨 PPTX 구분 + xlsx 현장부문 등급에 매해됩
   content: string;
   actionRequest: string;
 };
@@ -47,6 +47,15 @@ export default function NewInspectionPage() {
   }
   function addFinding() {
     setFindings((prev) => [...prev, INITIAL_FINDING()]);
+  }
+
+  /** 부문 변경 시: 서류는 등급 제거, 현장으로 바뀜 떀 괰레 등급 기본값(미흡) 촔웩 */
+  function handleSectionChange(id: string, section: "서류" | "현장") {
+    if (section === "서류") {
+      updateFinding(id, { section, grade: undefined });
+    } else {
+      updateFinding(id, { section, grade: "미흡" });
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -150,23 +159,27 @@ export default function NewInspectionPage() {
                       className="text-xs text-red-500 hover:text-red-700">제거</button>
                   )}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className={`grid gap-3 ${f.section === "현장" ? "grid-cols-2" : "grid-cols-1"}`}>
                   <div>
                     <label className="text-xs text-gray-500 mb-1 block">부문</label>
-                    <select value={f.section} onChange={(e) => updateFinding(f.id, { section: e.target.value as any })}
+                    <select value={f.section} onChange={(e) => handleSectionChange(f.id, e.target.value as any)}
                       className="w-full border rounded px-2 py-1.5 text-sm">
                       <option value="현장">현장</option>
                       <option value="서류">서류</option>
                     </select>
                   </div>
-                  <div>
-                    <label className="text-xs text-gray-500 mb-1 block">등급</label>
-                    <select value={f.grade} onChange={(e) => updateFinding(f.id, { grade: e.target.value as any })}
-                      className="w-full border rounded px-2 py-1.5 text-sm">
-                      <option value="미흡">미흡</option>
-                      <option value="위험">위험</option>
-                    </select>
-                  </div>
+                  {/* 서류부문 지적사항은 등급 구분이 없으목 — xlsx 서류부문 시트는 의견란(H열)에만 기록되고
+                      별도의 양호/미흡/위험 컬럼이 없음. 현장부문만 별첨 PPTX 구분 + xlsx 등급에 매해될 */}
+                  {f.section === "현장" && (
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1 block">등급</label>
+                      <select value={f.grade ?? "미흡"} onChange={(e) => updateFinding(f.id, { grade: e.target.value as any })}
+                        className="w-full border rounded px-2 py-1.5 text-sm">
+                        <option value="미흡">미흡</option>
+                        <option value="위험">위험</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 mb-1 block">지적 내용</label>
