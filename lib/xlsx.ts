@@ -1,105 +1,214 @@
 /**
- * xlsx 평가표 자동 생성 (JSZip 기반 XML 조작)
+ * 정기평가 xlsx 자동 생성 (JSZip 기반 XML 직접 조작)
  *
- * 템플릿 시트 구성:
- *   평가결과 시트: 현장명, 공사금액, 점검기간, 공사기간, 등 요약
- *   서류부문 시트: 항목별 점수
- *   현장부문 시트: 지적사항
+ * 시트 구조 (제주삼다수 템플릿 기준, 분석 완료):
+ *   1. "평가 결과"        — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업
+ *                          C9=공사금액 F9=공사기간 J9=현장소장/안전관리자
+ *                          D13=서류부문총점 F13=서류점수 I13=현장점수 L13=가감점 O13=보정계수
+ *   2. "안전보건 서류부문" — 체크리스트 47항목(DOC_CHECKLIST). H{row}=의견(보조)
+ *   3. "안전보건 현장부문" — 체크리스트 158항목(FIELD_CHECKLIST). D양호/E미흡/F위험=1or2, G{row}=발건사항
+ *   4. "Sheet3"            — 가감점 보정표 (고정값, 미사용)
+ *
+ * 지적사항 텍스트는 PPTX 별첨 슬라이드와 100% 동일해야 함 — Gemini가 가장 유사한
+ * 체크리스트 항목을 찾아 해당 행에 등곁/내용을 기록한다 (matchChecklistRow).
  */
 
 import JSZip from "jszip";
+import { FIELD_CHECKLIST, DOC_CHECKLIST } from "./checklist-data";
+import { matchChecklistRow } from "./gemini";
 
-export type XlsxInput = {
+export type FieldFindingInput = { content: string; grade: "위험" | "미흡" };
+export type DocFindingInput = { content: string };
+
+export type RegularXlsxInput = {
   siteName: string;
-  amount: string;
-  constructionPeriod: string;
-  inspectionPeriod: string;
-  siteManager: string;
-  safetyManager: string;
-  docScore: string;
-  fieldScore: string;
-  deduction: string;
-  totalScore: string;
-  docFindings: Array<{ category: string; content: string; score: string }>;
-  fieldFindings: Array<{ riskType: string; content: string; deduction: number }>;
+  inspectionPeriod: string;     // F7 (예: "2026-06-10 ~ 06-11")
+  inspectors: string;           // J7
+  mainWork: string;             // N7
+  amount: string;               // C9 (숫자 또는 "47,316,083,290")
+  constructionPeriod: string;   // F9
+  managerInfo: string;          // J9 (현장소장/안전관리자 이맄)
+  docTotalScore: string;        // D13 (서류부문 총점, 100점 만점)
+  docSectionScore: string;      // F13 (서류부문 점수, 50점 만점)
+  fieldSectionScore: string;    // I13 (현장부문 점수, 50점 만점)
+  deduction: string;            // L13 (가감점)
+  correctionFactor: string;     // O13 (보정계수)
+  fieldFindings: FieldFindingInput[]; // 안전보건 현장부문 지적사항 (PPTX 슬라이드4와 동일 텍스트)
+  docFindings: DocFindingInput[];     // 안전보건 서류부문 지적사항 (PPTX 슬라이드3과 동일 텍스트)
 };
 
-/** 공유 문자열에서 인덱스로 값 조회 */
-function getSharedString(sharedXml: string, idx: number): string {
-  const re = /<si>[\s\S]*?<\/si>/g;
-  let count = 0;
-  let m;
-  while ((m = re.exec(sharedXml)) !== null) {
-    if (count === idx) {
-      const texts = [...m[0].matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map(x => x[1]);
-      return texts.join("");
-    }
-    count++;
-  }
-  return "";
+// ── 셀 참조 유틸 ─────────────────────────────────────────────────────────────────────
+
+function colToNum(col: string): number {
+  let n = 0;
+  for (const c of col) n = n * 26 + (c.charCodeAt(0) - 64);
+  return n;
 }
 
-/** 공유 문자열에 새 문자열 추가 후 인덱스 반환 */
+function parseRef(ref: string): { col: string; row: number } {
+  const m = ref.match(/^([A-Z]+)(\d+)$/)!;
+  return { col: m[1], row: parseInt(m[2], 10) };
+}
+
+function escXml(s: string): string {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ── sharedStrings 조작 ────────────────────────────────────────────────────
+
 function addSharedString(sharedXml: string, value: string): { xml: string; idx: number } {
   const count = [...sharedXml.matchAll(/<si>/g)].length;
-  const newSi = `<si><t>${value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</t></si>`;
-  const xml = sharedXml.replace("</sst>", `${newSi}</sst>`);
-  // count attr 업데이트
-  const updated = xml.replace(
-    /(<sst[^>]*count=")(\d+)"/,
-    (_, pre) => `${pre}${count + 1}"`
-  ).replace(
-    /(<sst[^>]*uniqueCount=")(\d+)"/,
-    (_, pre) => `${pre}${count + 1}"`
-  );
-  return { xml: updated, idx: count };
+  const newSi = `<si><t xml:space="preserve">${escXml(value)}</t></si>`;
+  let xml = sharedXml.replace("</sst>", `${newSi}</sst>`);
+  xml = xml.replace(/(<sst[^>]*\bcount=")(\d+)(")/, (_, p, n, s) => `${p}${parseInt(n) + 1}${s}`);
+  xml = xml.replace(/(<sst[^>]*\buniqueCount=")(\d+)(")/, (_, p, n, s) => `${p}${parseInt(n) + 1}${s}`);
+  return { xml, idx: count };
 }
 
-/** 시트 XML에서 특정 셀 ("A1" 형식) 값 수정 */
-function setCellValue(sheetXml: string, cellRef: string, value: string, strIdx: number): string {
-  // 시트에 해당 셀이 있으면 수정, 없으면 무시
-  const cellRe = new RegExp(`(<c r="${cellRef}"[^>]*>)[\\s\\S]*?(<\/c>)`);
-  if (cellRe.test(sheetXml)) {
-    return sheetXml.replace(cellRe, `<c r="${cellRef}" t="s"><v>${strIdx}</v></c>`);
+// ── 행 안에서 셀 삽입 위아(열 순서) 찾기 ──────────────────────────
+
+function insertCellInOrder(rowContent: string, ref: string, newCellXml: string): string {
+  const target = colToNum(parseRef(ref).col);
+  const cellRe = /<c r="([A-Z]+)\d+"[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g;
+  let m: RegExpExecArray | null;
+  while ((m = cellRe.exec(rowContent)) !== null) {
+    if (colToNum(m[1]) > target) {
+      return rowContent.slice(0, m.index) + newCellXml + rowContent.slice(m.index);
+    }
   }
-  return sheetXml;
+  return rowContent + newCellXml;
 }
+
+function getRowBlock(sheetXml: string, rowNum: number): { full: string; open: string; content: string; close: string } | null {
+  const re = new RegExp(`(<row[^>]*\\br="${rowNum}"[^>]*>)([\\s\\S]*?)(</row>)`);
+  const m = sheetXml.match(re);
+  if (!m) return null;
+  return { full: m[0], open: m[1], content: m[2], close: m[3] };
+}
+
+/** 셀에 공유문자열(텍스트) 기록. 기존 셀 있으면 style 보존하며 교체, 없으면 행 안에 순서대로 삽입 */
+function setCellSharedString(sheetXml: string, ref: string, ssIdx: number): string {
+  const { row } = parseRef(ref);
+  const rb = getRowBlock(sheetXml, row);
+  if (!rb) return sheetXml; // 해당 행이 템플릿에 없으으면 스킵
+
+  const cellRe = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`);
+  let newContent: string;
+  if (cellRe.test(rb.content)) {
+    newContent = rb.content.replace(cellRe, (_match, attrs: string) => {
+      const styleM = attrs.match(/\ss="(\d+)"/);
+      const styleAttr = styleM ? ` s="${styleM[1]}"` : "";
+      return `<c r="${ref}"${styleAttr} t="s"><v>${ssIdx}</v></c>`;
+    });
+  } else {
+    newContent = insertCellInOrder(rb.content, ref, `<c r="${ref}" t="s"><v>${ssIdx}</v></c>`);
+  }
+  return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
+}
+
+/** 셀에 숫자값 기록 */
+function setCellNumber(sheetXml: string, ref: string, value: number): string {
+  const { row } = parseRef(ref);
+  const rb = getRowBlock(sheetXml, row);
+  if (!rb) return sheetXml;
+
+  const cellRe = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`);
+  let newContent: string;
+  if (cellRe.test(rb.content)) {
+    newContent = rb.content.replace(cellRe, (_match, attrs: string) => {
+      const styleM = attrs.match(/\ss="(\d+)"/);
+      const styleAttr = styleM ? ` s="${styleM[1]}"` : "";
+      return `<c r="${ref}"${styleAttr}><v>${value}</v></c>`;
+    });
+  } else {
+    newContent = insertCellInOrder(rb.content, ref, `<c r="${ref}"><v>${value}</v></c>`);
+  }
+  return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
+}
+
+// ── 시트 이렬 → 파일 경로 매핵 ──────────────────────────────────
+
+async function buildSheetPathMap(zip: JSZip): Promise<Record<string, string>> {
+  const wbXml = await zip.file("xl/workbook.xml")!.async("string");
+  const relsXml = await zip.file("xl/_rels/workbook.xml.rels")!.async("string");
+
+  const relMap: Record<string, string> = {};
+  for (const m of relsXml.matchAll(/<Relationship Id="(rId\d+)"[^>]+Target="([^"]+)"/g)) {
+    relMap[m[1]] = m[2];
+  }
+
+  const map: Record<string, string> = {};
+  for (const m of wbXml.matchAll(/<sheet[^>]+name="([^"]+)"[^>]*r:id="(rId\d+)"/g)) {
+    const target = relMap[m[2]];
+    if (target) map[m[1]] = "xl/" + target;
+  }
+  return map;
+}
+
+// ── PUBLIC: 정기평가 xlsx 생성 ─────────────────────────────────────
 
 export async function generateRegularXlsx(
   templateBuffer: Buffer,
-  data: XlsxInput
+  data: RegularXlsxInput
 ): Promise<Buffer> {
   const zip = await JSZip.loadAsync(templateBuffer);
+  const sheetPath = await buildSheetPathMap(zip);
 
-  let sharedXml = await zip.file("xl/sharedStrings.xml")!.async("string");
-
-  // 입력값들을 공유문자열에 추가
-  const fields: Record<string, string> = {
-    siteName: data.siteName,
-    amount: data.amount,
-    constructionPeriod: data.constructionPeriod,
-    inspectionPeriod: data.inspectionPeriod,
-    siteManager: data.siteManager,
-    safetyManager: data.safetyManager,
-    docScore: data.docScore,
-    fieldScore: data.fieldScore,
-    deduction: data.deduction,
-    totalScore: data.totalScore,
-  };
-
-  const idxMap: Record<string, number> = {};
-  for (const [key, val] of Object.entries(fields)) {
-    const res = addSharedString(sharedXml, val);
-    sharedXml = res.xml;
-    idxMap[key] = res.idx;
+  let ssXml = await zip.file("xl/sharedStrings.xml")!.async("string");
+  function writeText(sheetXml: string, ref: string, text: string): string {
+    const r = addSharedString(ssXml, text);
+    ssXml = r.xml;
+    return setCellSharedString(sheetXml, ref, r.idx);
   }
 
-  // 평가결과 시트 (시트 번호는 실제 xlsx에 맞게 조정 필요)
-  // 새 테이터를 커스텀 셀 위치에 없데이트
-  // 현재는 단순 로거로 대체 (Phase2에서 정교화)
-  console.log("xlsx data:", JSON.stringify(idxMap));
+  // ── 1. 평가 결과 시트 ──
+  const s1Path = sheetPath["평가 결과"];
+  if (s1Path && zip.file(s1Path)) {
+    let s1 = await zip.file(s1Path)!.async("string");
+    s1 = writeText(s1, "B7", data.siteName);
+    s1 = writeText(s1, "F7", data.inspectionPeriod);
+    s1 = writeText(s1, "J7", data.inspectors);
+    s1 = writeText(s1, "N7", data.mainWork);
+    const amountNum = parseFloat(String(data.amount).replace(/[^0-9.]/g, "")) || 0;
+    s1 = setCellNumber(s1, "C9", amountNum);
+    s1 = writeText(s1, "F9", data.constructionPeriod);
+    s1 = writeText(s1, "J9", data.managerInfo);
+    s1 = setCellNumber(s1, "D13", parseFloat(data.docTotalScore) || 0);
+    s1 = setCellNumber(s1, "F13", parseFloat(data.docSectionScore) || 0);
+    s1 = setCellNumber(s1, "I13", parseFloat(data.fieldSectionScore) || 0);
+    s1 = setCellNumber(s1, "L13", parseFloat(data.deduction) || 0);
+    s1 = setCellNumber(s1, "O13", parseFloat(data.correctionFactor) || 1);
+    zip.file(s1Path, s1);
+  }
 
-  zip.file("xl/sharedStrings.xml", sharedXml);
+  // ── 2. 안전보건 현장부문 시트 — AI 매징 후 등걡/내용 기록 ──
+  const s3Path = sheetPath["안전보건 현장부문"];
+  if (s3Path && zip.file(s3Path)) {
+    let s3 = await zip.file(s3Path)!.async("string");
+    for (const f of data.fieldFindings) {
+      const row = await matchChecklistRow(f.content, FIELD_CHECKLIST);
+      if (!row) continue;
+      const col = f.grade === "위험" ? "F" : "E";
+      const val = f.grade === "위험" ? 2 : 1;
+      s3 = setCellNumber(s3, `${col}${row}`, val);
+      s3 = writeText(s3, `G${row}`, f.content);
+    }
+    zip.file(s3Path, s3);
+  }
+
+  // ── 3. 안전보건 서류부문 시트 — AI 매징 후 의견란 기록 ──
+  const s2Path = sheetPath["안전보건 서류부문"];
+  if (s2Path && zip.file(s2Path)) {
+    let s2 = await zip.file(s2Path)!.async("string");
+    for (const f of data.docFindings) {
+      const row = await matchChecklistRow(f.content, DOC_CHECKLIST);
+      if (!row) continue;
+      s2 = writeText(s2, `H${row}`, f.content);
+    }
+    zip.file(s2Path, s2);
+  }
+
+  zip.file("xl/sharedStrings.xml", ssXml);
 
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
