@@ -1,16 +1,20 @@
 import { ChecklistItem } from "./checklist-data";
 
-// 자 수 한도 (셀 크기·폰트 기준 분석값)
+// 글자수 한도 (셀 크기·폰트 기준 분석값)
 export const CELL_LIMITS = {
-  별첨_내용: 35,    // 10.1cm × 1.3cm, 11pt, 약 2줄
-  서류부문: 35,     // 15.7cm × 0.8cm, 10.5pt, 1줄
-  현장부문_내용: 30, // 좋은 셀
+  별첨_내용: 35,    // PPTX 별첨 10.1cm × 1.3cm, 11pt, 약 2줄
+  서류부문: 35,     // PPTX 서류부문 슬라이드 15.7cm × 0.8cm, 10.5pt, 1줄
+  현장부문_내용: 30, // PPTX 현장부문 셋은 셀
   조치요구: 40,
 } as const;
 
+// xlsx 안전보건 서류부문 H열(의견란) 실제측: 열너바 20.33, 3행 병합(65.7pt), 9pt 썮은고딜.
+// 한 줄에 약 10자, 쵝대 5줄 정도 들어감 — 안전하게 45자로 제한.
+export const DOC_OPINION_TOTAL_CHARS = 45;
+
 /**
- * 텍스트가 maxChars를 초과하면 Gemini로 요약, 이하면 원문 반환
- * 폰트 크기는 고정 — 텍스트 내용 자신을 줄임
+ * 텍스트가 maxChars를 초과하으면 Gemini로 요약, 이하으면 원문 반환
+ * 폰트 크기는 고정 — 텍스트 내용 자신을 줄임 (Excel shrinkToFit은 원잘 폰트 크기를 바꿌서 사용하지 않음)
  */
 export async function summarizeForCell(
   text: string,
@@ -43,7 +47,6 @@ export async function summarizeForCell(
     const data = await res.json();
     const summary: string = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
     if (summary && summary.length <= maxChars) return summary;
-    // 요약이 어지 김리면 앞부분럸
     return summary.slice(0, maxChars) || text.slice(0, maxChars);
   } catch (e) {
     console.error("Gemini 요약 실패:", e);
@@ -51,7 +54,32 @@ export async function summarizeForCell(
   }
 }
 
-/** 그앮적 경한 감지 괜타 추출 (Gemini 불필요) */
+/**
+ * 여러 지적사항이 같은 셀(공유 체크리스트 항목)에 매징될 뙄 하나로 합쳐 쓰는다.
+ * 줄변경(\n)으로 구분해 쓰고, 합쳐쁌 글자수가 한도를 초과하면 각 건을 건수대로 나뉘어 Gemini로
+ * 감단해띴 총 글자수가 한도 안에 들어가게 한다. 폰트 크기는 안 목 좀이고 내용만 줄인다.
+ */
+export async function combineFindingTexts(
+  texts: string[],
+  totalCharBudget: number = DOC_OPINION_TOTAL_CHARS
+): Promise<string> {
+  const filtered = texts.filter((t) => t && t.trim());
+  if (filtered.length === 0) return "";
+  if (filtered.length === 1) {
+    const t = filtered[0];
+    return t.length <= totalCharBudget ? t : await summarizeForCell(t, totalCharBudget);
+  }
+
+  const joined = filtered.join("\n");
+  if (joined.length <= totalCharBudget) return joined;
+
+  // 합쳐서 동과하면 항목당 권돔 너이어 개별 요약 (줄바꿈 기호 타면은 제외하고 계산)
+  const perItemBudget = Math.max(8, Math.floor((totalCharBudget - (filtered.length - 1)) / filtered.length));
+  const shortened = await Promise.all(filtered.map((t) => summarizeForCell(t, perItemBudget)));
+  return shortened.join("\n");
+}
+
+/** 그그적 경로 각장 검월 권타 추출 (Gemini 불필요) */
 export function detectRiskType(text: string): string {
   if (/추락|난간|개구부|고소|작업발판|단부/.test(text)) return "추락";
   if (/낙하|뱄똈|낙석/.test(text)) return "낙하";
@@ -63,11 +91,11 @@ export function detectRiskType(text: string): string {
 }
 
 /**
- * 지적사항 텍스트와 가장 관리있는 체크리스트 행(row)을 찾는다.
+ * 지적사항 텍스트와 가장 관리있는 체크리스트 항(row)을 찾는다.
  * xlsx의 안전보건 현장부문/서류부문 시트는 158건/47건의 고정 점검항목으로
  * 구성되어 있어, PPTX 지적사항이 어느 항목에 해당하는지 AI가 자동 매징한다.
  *
- * @returns 매쾤된 체크리스트의 row 번호 (xlsx 행 번호). 실패 시 null.
+ * @returns 매징된 체크리스트의 row 번호 (xlsx 행 번호). 실패 시 null.
  */
 export async function matchChecklistRow(
   findingText: string,
@@ -115,7 +143,7 @@ export async function matchChecklistRow(
   }
 }
 
-/** Gemini 불필요/실패 시 키워드 중백도 기반 폴백 매징 */
+/** Gemini 불필요/실패 시 키워드 중복도 기반 폴백 매징 */
 function fallbackKeywordMatch(findingText: string, checklist: ChecklistItem[]): number | null {
   const keywords = findingText.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(w => w.length >= 2);
   if (keywords.length === 0) return checklist[0]?.row ?? null;
