@@ -6,7 +6,7 @@
  *   2. 점검목록  - A: id, B: 현장명, C: 유형(정기/준수), D: 점검시작, E: 점검종료, F: 점검자,
  *                    G: 공사기간, H: 공사금액, I: 공정율, J: 현장소장, K: 안전관리자,
  *                    L: 서류점수, M: 현장점수, N: 상태, O: 업로드토큰, P: pptxUrl, Q: xlsxUrl
- *   3. 지적사항  - A: id, B: 점검id, C: 섹션, D: 등급, E: 내용, F: 조치요구, G: 항목명
+ *   3. 지적사항  - A: id, B: 점검id, C: 섹션, D: 등급(현장부문만 사용, 서류부문은 번), E: 내용, F: 조치요구, G: 항목명
  *   4. 조치관리  - A: id, B: 점검id, C: 지적id, D: 사진URL, E: 메모, F: 업로드시간
  *   5. 사용자   - (Phase2)
  *   6. 템플릿설정 - (Phase2)
@@ -52,7 +52,11 @@ export type InspectionInput = {
 export type FindingInput = {
   inspectionId: string;
   section: "서류" | "현장";
-  grade: "위험" | "미흡";
+  /**
+   * 현장부문 지적사항만 사용 — 별첨 PPTX 구분섬 및 xlsx 현장부문 시트의 양호/미흡/위험 그닌에 매해됩.
+   * 서류부문 지적사항은 당글 이 한도가 없으며(xlsx 서류부문 시트는 의견란에만 기록), undefined로 든다.
+   */
+  grade?: "위험" | "미흡";
   content: string;
   actionRequest?: string;
   itemName?: string;
@@ -190,7 +194,7 @@ export async function createFinding(input: FindingInput): Promise<string> {
     valueInputOption: "RAW",
     requestBody: {
       values: [[
-        id, input.inspectionId, input.section, input.grade,
+        id, input.inspectionId, input.section, input.grade ?? "",
         input.content, input.actionRequest ?? "", input.itemName ?? "",
       ]],
     },
@@ -204,7 +208,7 @@ export async function getFindingsByInspection(inspectionId: string) {
   return (res.data.values ?? [])
     .filter((r) => r[1] === inspectionId)
     .map((r) => ({
-      id: r[0], inspectionId: r[1], section: r[2], grade: r[3],
+      id: r[0], inspectionId: r[1], section: r[2], grade: r[3] || undefined,
       content: r[4] ?? "", actionRequest: r[5] ?? "", itemName: r[6] ?? "",
     }));
 }
