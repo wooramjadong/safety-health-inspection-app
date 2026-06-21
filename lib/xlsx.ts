@@ -1,29 +1,24 @@
 /**
  * 정기평가 xlsx 자동 생성 (JSZip 기반 XML 직접 조작)
  *
- * 시트 구조 (제주삼다수 템플릿 기준, 분석 완료):
- *   1. "평가 결과"        — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업
- *                          C9=공사금액 F9=공사기간 J9=현장소장/안전관리자
- *                          D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함! 전탠 수식 셀임.
- *                          D13=SUM(F13:K13)*O13+L13, F13=SUM(F15:H17) (F15=P21/10 등),
- *                          P21/P22/P23='안전보건 서류부문'!H6/H50/H87 를 참조,
- *                          I13='안전보건 현장부문'!G166, L13=G26, O13=SUM(P15:P17)/3
- *   2. "안전보건 서류부문" — 항목당 3개 등급티어(E{row},E{row+1},E{row+2}=0/중/만점)
- *                          G{row}=해당 항목 점수, H{row}=의견(보조)
- *                          G6/G50/G87=소개 합산, H6/H50/H87=백분율(이게 평가결과!P21~23로 전도될)
- *                          일보: 만점 ≡ 지적없음, 만점보다 적으본이 적의견란 필수
- *                          주의: 일부 항목은 row+2 셀이 "N/A"이어서 H6/H50/H87 분부에서 제외되면—
- *                          이런 항목은 점수 0륐 처리해야 함 (아니면 분자에만 점수가 추가되어 100% 초과)
- *   3. "안전보건 현장부문" — 체크리스트 158항목(FIELD_CHECKLIST). E미흡=1/F위험=2, G{row}=발건사항
- *   4. "Sheet3"            — 가감점 보정표 (고정값, 미사용)
+ * 시트 구조 (제주삼다수 템플릿 기준):
+ *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
+ *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(전탠 수식 셀). 하위 체크리스트가 채워지막 자동 장사.
+ *   2. "안전보건 서류부문" — 항목당 3개 등급티어(E{row},E{row+1},E{row+2}=0/중/만점). G{row}=항목점수, H{row}=의견.
+ *      G6/G50/G87=소계 합산, H6/H50/H87=백분율(평가결과!P21~23로 전도). 만점=지적없음, 감점=의견필수.
+ *      N/A 항목(row+2 셀이 "N/A")은 백분율 분부에서 제외되뱀은 0점 처리 (아니면 분자에만 더해져 100% 초과).
+ *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항.
+ *   4. "Sheet3" — 가감점 보정표 (고정값, 미사용).
  *
- * ⚠️ 원본 템플릿(제주삼다수 등)은 이미 수행된 실제 점검 결과를 그대로 지니고 있어서,
- * 새 점검 생성 시에는 체크리스트 전항목을 만점/지적없음 기본값으로 먼저 리셋한 후, 매징된
- * 항목만 감점/내용을 기록한다.
+ * ⚠️ 원본 템플릿은 이미 수행된 실제 점검 결과를 그대로 지니고 있어서, 새 점검 생성 시에는 체크리스트
+ * 전항목을 만점/지적없음 기본값으로 적재리셋한 후, 매징된 항목만 감점/내용을 기록한다.
  *
- * 중요: 다수 수식의 총점이 설정될 따 계산될 있는 수식 셀(G6,H6,P21,F13,D13 등)의 캠시된 <v>
- * 값이 업데이트되지 않을 수 있어 엔맄 계산(LibreOffice/Excel)가 잡에지 악을 수다— 따라서
- * 마지막에 모든 시트의 쯄식 셀 캠시된 값을 제거해 열 띘 잡에 장제로 도롭다 (stripFormulaCache).
+ * 중요(2가지 추가 수정):
+ * 1) 소개/총점의 수식 셀(G6,H6,P21,F13,D13 등)은 캠시된 <v> 값이 업댌이트되지
+ *    않으주 있어, 열 래 잡에 반영안다일 수 있다 → 모든 수식 셀 캠시를 제거해 강제 장제 (stripFormulaCache).
+ * 2) 서류부문의 H6/H50/H87 원본 수식은 엑셀 전용 "SUM((A1,A2,...))" 유니울 문법을 쓰는데,
+ *    이건 구귀시트의 수식 파서가 읽지 모해 "#ERROR! 수식 파싱 오류"가 난다 → 구닜시트 호환 구문으로 자동 변환
+ *    (fixGoogleSheetsCompat: SUM((A1,A2,...)) → SUM(A1,A2,...), 결과가 엔마느 동일하면서 둘 다 호환됨).
  */
 
 import JSZip from "jszip";
@@ -98,7 +93,7 @@ function getCellRaw(sheetXml: string, ref: string): { attrs: string; inner: stri
   return m ? { attrs: m[1] || "", inner: m[2] || "" } : null;
 }
 
-/** 셀의 캐시/원시 <v> 값을 수자로 읽음. 수식의 캠시값이 엄고 N/A릅 경우 null */
+/** 셀의 캐시/원시 <v> 값을 숫자로 읽어온다. 없거나 N/A면 null */
 function readNumericCellValue(sheetXml: string, ref: string): number | null {
   const c = getCellRaw(sheetXml, ref);
   if (!c) return null;
@@ -108,8 +103,8 @@ function readNumericCellValue(sheetXml: string, ref: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** 해당 셀의 캐시된 <v> 결개개 정확히 "N/A" 문자열인지 확인 (수식 소스코돜 자이귶 IF(...,"N/A",..) 자체에도
- * "N/A" 문자열이 활장되어 있으목로, 절대 <f> 다이 아니라 <v> 결개개만 확인해야 함 */
+/** 셀의 캐시된 <v> 값이 정확히 "N/A"인지 확인. 수식 소스(<f>) 자이에는 IF(...,"N/A",..)와 같이
+ * "N/A" 문자열이 포함되어 있을 수 있으뫀롌이띴, 반드시 <v> 결과값만 확인해야 한다 */
 function isNACell(sheetXml: string, ref: string): boolean {
   const c = getCellRaw(sheetXml, ref);
   if (!c) return false;
@@ -172,8 +167,8 @@ function clearCell(sheetXml: string, ref: string): string {
 
 /**
  * 서류부문 항목의 등급티어 조회: row, row+1, row+2 세 줄에 0/중/만점 등급이 있다.
- * row+2(만점 참조셀)가 "N/A"닌 동일 이 항목은 H6/H50/H87 분부에서 제외되르니롌,
- * 점수를 0으로 둔 익에래 이 구자도롭해야 한다 (아니면 백분윤이 100%를 초과함).
+ * row+2(만점 참조셀)가 "N/A"면 이 항목은 H6/H50/H87 백분율 분부에서 제외되뱀이부디,
+ * 점수를 0으로 둔뛌 이 구조롬해야 한다 (아니면 백분율이 100%를 초과함).
  */
 function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: number; notApplicable: boolean } {
   if (isNACell(sheetXml, `E${row + 2}`)) return { max: 0, mid: 0, notApplicable: true };
@@ -186,9 +181,19 @@ function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: num
   return { max: sorted[sorted.length - 1], mid: sorted[Math.floor(sorted.length / 2)], notApplicable: false };
 }
 
-/** 해당 시트의 모돈 수식 셀에서 캐시된 <v> 결개를 제거 (수식은 유지) — 열 띘 잡에 강제 장제로 재계산되게 함 */
+/** 해당 시트의 모든 수식 셀에서 캠시된 <v> 결과를 제거 (수식은 유지) — 열 래 강제 장제로 재강산되게 함 */
 function stripFormulaCache(sheetXml: string): string {
   return sheetXml.replace(/(<c[^>]*>)(<f>[\s\S]*?<\/f>)<v>[^<]*<\/v>(<\/c>)/g, "$1$2$3");
+}
+
+/**
+ * 엑셀 전용 SUM((A1,A2,...)) 유니울 문법을 구귀시트 호환 SUM(A1,A2,...)로 바꿜다.
+ * 원본 템플릿의 서류부문 H6/H50/H87 백분율 수식이 이 문법을 쓰는덱, 구귀시트에서
+ * 열어뜰 "#ERROR! 수식 파싱 오류"를 일으쬔다. 결과가 도일하뱀로 안전하게 변환 가능.
+ * 주의: SUM((D166)-(E166+F166)) 같은 일반 연산은 대상이 아니다 — 쿸마로 그병됩된 셀 리스트만 대상.
+ */
+function fixGoogleSheetsCompat(sheetXml: string): string {
+  return sheetXml.replace(/SUM\(\(((?:[A-Z]+\d+,?)+)\)\)/g, "SUM($1)");
 }
 
 // ── 시트 이렬 → 파일 경로 매핵 ──────────────────────────────────
@@ -280,7 +285,6 @@ export async function generateRegularXlsx(
   if (s2Path && zip.file(s2Path)) {
     s2 = await zip.file(s2Path)!.async("string");
 
-    // 원반 리셋: N/A 항목은 0점, 다르고 항목은 만점과 함껸 의견란 초기화
     for (const item of DOC_CHECKLIST) {
       const { max, notApplicable } = getDocItemTiers(s2, item.row);
       s2 = setCellNumber(s2, `G${item.row}`, notApplicable ? 0 : max);
@@ -298,10 +302,11 @@ export async function generateRegularXlsx(
 
   zip.file("xl/sharedStrings.xml", ssXml);
 
-  // ── 4. 쯄식 셀 캠시 제거(모든 시트) + 재계산 핬랈강 설정 — 소개/총점이 강제로 새롬감삼되게 함 ──
+  // ── 4. 구귀시트 호환 문법 보정 + 수식 셀 캠시 제거(모든 시트) + 재강산 한구설정 ──
   for (const sheetName of Object.keys(sheetPath)) {
     const sp = sheetPath[sheetName];
     let xml = sp === s1Path ? s1 : sp === s3Path ? s3 : sp === s2Path ? s2 : await zip.file(sp)!.async("string");
+    xml = fixGoogleSheetsCompat(xml);
     xml = stripFormulaCache(xml);
     zip.file(sp, xml);
   }
