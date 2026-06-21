@@ -10,9 +10,8 @@
     "test:local": "tsx scripts/test-local-generate.ts"
   },
   "dependencies": {
-    "@googleapis/drive": "^12.0.0",
-    "@googleapis/sheets": "^9.0.0",
     "google-auth-library": "^9.15.1",
+    "googleapis": "^144.0.0",
     "jszip": "^3.10.1",
     "next": "^15.1.0",
     "pptxgenjs": "^3.12.0",
