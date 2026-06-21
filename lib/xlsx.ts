@@ -1,28 +1,24 @@
 /**
  * 정기평가 xlsx 자동 생성 (JSZip 기반 XML 직접 조작)
  *
+ * 중요: generateRegularXlsx는 이제 { buffer, scores } 를 반환한다. scores는 xlsx의
+ * 수식(D13/F13/I13/O13)과 수학적으로 동일하게 JS로 계산된 값이고, PPTX 슬라이듌의
+ * 점수표와 일썱시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점 까지 일쬔).
+ *
+ * 점수 공식 (원본 수식을 그대로 분석해 재현):
+ *   현장부문점수 = 50 - 주(도적됨 체크리스트 합의 감점 (행 단위, 중복 매징도 1번만 차감) — 미흡=-1, 위험=-2
+ *   서류부문점수 = 현장소장%/10 + 관리감독자%/5 + 안전관리자%/5
+ *     (각 %는 100*해당역할 항목점수합/해당역할 총철점합, N/A 항목은 총철점에서도 제외)
+ *   보정계수 = (월공정률보정+주위험공종진행+안전보조원운영)/3
+ *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 입력 UI 없으뭴 항상 0)
+ *
  * 시트 구조 (제주삼다수 템플릿 기준):
  *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
- *      P15/P16/P17=보정계수 하위 3건(월공정률보정/주위험공종진행/안전보조원운영). O13=SUM(P15:P17)/3가 자동 계산.
- *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(전탠 수식 셀). 하위 체크리스트가 채워지막 자동 장사.
- *   2. "안전보건 서류부문" — 항목당 3개 등급티어(E{row},E{row+1},E{row+2}=0/중/만점). G{row}=항목점수, H{row}=의견.
- *      G6/G50/G87=소계 합산, H6/H50/H87=백분율(평가결과!P21~23로 전도). 만점=지적없음, 감점=의견필수.
- *      H열은 열너바 20.33, 3행 병합(65.7pt), 9pt. 다수 지적사항이 한 항목에 모이여면
- *      \n로 줄을 나눠 wrapText로 표시하고, 총 글자수가 한도(45자)를 넘으도니 Gemini로 축쇕한다 (폰트 크기는 변경 안 함).
- *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항 (원도 shrinkToFit 원본 스타일 유지).
+ *      P15/P16/P17=보정계수 하위 3건. G21:G25=가감점(현재 UI 없이 0으로 리셋).
+ *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(수식 셀). 하위 입력대로 자동 장사.
+ *   2. "안전보건 서류부문" — 항목당 3개 등급티어. G{row}=항목점수, H{row}=의견. 만점=지적없음.
+ *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항.
  *   4. "Sheet3" — 가감점 보정표 (고정값, 미사용).
- *
- * ⚠️ 원본 템플릿은 이미 수행된 실제 점검 결과를 그대로 지니고 있어서, 새 점검 생성 시에는 체크리스트
- * 전항목을 만점/지적없음 기본값으로 적재리셋한 후, 매징된 항목만 감점/내용을 기록한다.
- *
- * 주의(핵시 수정 4개):
- * 1) 소계/총점의 수식 셀(G6,H6,P21,F13,D13 등)은 캠시된 <v> 값이 업댌이트되지
- *    않을 수 있어 열 래 잡에 반영안다일 수 있다 → 모든 수식 셀 캠시를 제거해 강제 장제(stripFormulaCache).
- * 2) 서류부문의 H6/H50/H87 원본 수식은 엑셀 전용 "SUM((A1,A2,...))" 유니울 문법이른데, 구귀시트
- *    파서가 읽지 모해 #ERROR가 난다 → SUM(A1,A2,...) 호환 문법으로 자동 변환(fixGoogleSheetsCompat).
- * 3) 다수 지적사항이 같은 체크리스트 항목에 매징되어도 쓰지 않고 합쳐서 쓴다(combineFindingTexts).
- *    서류부문 H열은 추가돔띴 wrapText 스타일을 부여해 줄바꿈이 동작하게 한다(ensureWrapTextStyle).
- * 4) 보정계수(O13)는 직접 입력이 아니다 — P15/P16/P17 세 건을 입력하여 수식이 자동으로 평교을 계산한다.
  */
 
 import JSZip from "jszip";
@@ -40,12 +36,24 @@ export type RegularXlsxInput = {
   amount: string;
   constructionPeriod: string;
   managerInfo: string;
-  /** 보정계수 하위 3건 (xlsx P15/P16/P17). 입력 없으면 기본값 "1"(보정 없음) */
   monthlyProgressFactor?: string;
   riskWorkFactor?: string;
   helperOperationFactor?: string;
   fieldFindings: FieldFindingInput[];
   docFindings: DocFindingInput[];
+};
+
+export type ComputedScores = {
+  totalScore: number;
+  docScore: number;
+  fieldScore: number;
+  deduction: number;
+  correctionFactor: number;
+};
+
+export type RegularXlsxResult = {
+  buffer: Buffer;
+  scores: ComputedScores;
 };
 
 // ── 셀 참조 유틸 ─────────────────────────────────────────────────────────────────────
@@ -116,27 +124,6 @@ function isNACell(sheetXml: string, ref: string): boolean {
   const vM = c.inner.match(/<v>([^<]*)<\/v>/);
   if (!vM) return false;
   return /^N\/A$/i.test(vM[1].trim());
-}
-
-function getCellStyleIndex(sheetXml: string, ref: string): number {
-  const c = getCellRaw(sheetXml, ref);
-  if (!c) return 0;
-  const m = c.attrs.match(/\ss="(\d+)"/);
-  return m ? parseInt(m[1], 10) : 0;
-}
-
-function setCellStyleIndex(sheetXml: string, ref: string, newStyleIdx: number): string {
-  const { row } = parseRef(ref);
-  const rb = getRowBlock(sheetXml, row);
-  if (!rb) return sheetXml;
-  const cellRe = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`);
-  if (!cellRe.test(rb.content)) return sheetXml;
-  const newContent = rb.content.replace(cellRe, (_match, attrs: string, inner?: string) => {
-    const restAttrs = attrs.replace(/\ss="\d+"/, "");
-    const newAttrs = ` s="${newStyleIdx}"${restAttrs}`;
-    return inner !== undefined ? `<c r="${ref}"${newAttrs}>${inner}</c>` : `<c r="${ref}"${newAttrs}/>`;
-  });
-  return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
 function setCellSharedString(sheetXml: string, ref: string, ssIdx: number): string {
@@ -250,6 +237,27 @@ function ensureWrapTextStyle(
   return { xml: newStylesXml, index: newIndex };
 }
 
+function getCellStyleIndex(sheetXml: string, ref: string): number {
+  const c = getCellRaw(sheetXml, ref);
+  if (!c) return 0;
+  const m = c.attrs.match(/\ss="(\d+)"/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function setCellStyleIndex(sheetXml: string, ref: string, newStyleIdx: number): string {
+  const { row } = parseRef(ref);
+  const rb = getRowBlock(sheetXml, row);
+  if (!rb) return sheetXml;
+  const cellRe = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`);
+  if (!cellRe.test(rb.content)) return sheetXml;
+  const newContent = rb.content.replace(cellRe, (_match, attrs: string, inner?: string) => {
+    const restAttrs = attrs.replace(/\ss="\d+"/, "");
+    const newAttrs = ` s="${newStyleIdx}"${restAttrs}`;
+    return inner !== undefined ? `<c r="${ref}"${newAttrs}>${inner}</c>` : `<c r="${ref}"${newAttrs}/>`;
+  });
+  return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
+}
+
 // ── 시트 이렬 → 파일 경로 매핵 ──────────────────────────────────
 
 async function buildSheetPathMap(zip: JSZip): Promise<Record<string, string>> {
@@ -286,7 +294,7 @@ function forceFullRecalcOnLoad(workbookXml: string): string {
 export async function generateRegularXlsx(
   templateBuffer: Buffer,
   data: RegularXlsxInput
-): Promise<Buffer> {
+): Promise<RegularXlsxResult> {
   const zip = await JSZip.loadAsync(templateBuffer);
   const sheetPath = await buildSheetPathMap(zip);
 
@@ -297,7 +305,6 @@ export async function generateRegularXlsx(
     return setCellSharedString(sheetXml, ref, r.idx);
   }
 
-  // ── 1. 평가 결과 시트 — 일반 입력값과 보정계수 하위 3건만 쓴다. D13/F13/I13/L13/O13(수식)은 절대 건드리지 않아 ──
   const s1Path = sheetPath["평가 결과"];
   let s1 = "";
   if (s1Path && zip.file(s1Path)) {
@@ -310,15 +317,16 @@ export async function generateRegularXlsx(
     s1 = setCellNumber(s1, "C9", amountNum);
     s1 = writeText(s1, "F9", data.constructionPeriod);
     s1 = writeText(s1, "J9", data.managerInfo);
-    // 보정계수(O13) 하위 3건 — 입력되자마자 O13=SUM(P15:P17)/3 수식이 자동 계산
     s1 = setCellNumber(s1, "P15", parseFloat(data.monthlyProgressFactor ?? "1") || 1);
     s1 = setCellNumber(s1, "P16", parseFloat(data.riskWorkFactor ?? "1") || 1);
     s1 = setCellNumber(s1, "P17", parseFloat(data.helperOperationFactor ?? "1") || 1);
+    // 가감점 입력 UI 없으목 항상 0으로 리셋 (L13=G26=SUM(G21:H25))
+    for (const r of [21, 22, 23, 24, 25]) s1 = setCellNumber(s1, `G${r}`, 0);
   }
 
-  // ── 2. 안전보건 현장부문 시트 — 전원 리셋('지적없음' 기본값) 후, 같은 항목에 매징된 지적사항은 합쳐서 기록 ──
   const s3Path = sheetPath["안전보건 현장부문"];
   let s3 = "";
+  const fieldGroups = new Map<number, { grades: string[]; texts: string[] }>();
   if (s3Path && zip.file(s3Path)) {
     s3 = await zip.file(s3Path)!.async("string");
     for (const item of FIELD_CHECKLIST) {
@@ -328,7 +336,6 @@ export async function generateRegularXlsx(
       s3 = clearCell(s3, `G${item.row}`);
     }
 
-    const fieldGroups = new Map<number, { grades: string[]; texts: string[] }>();
     for (const f of data.fieldFindings) {
       const row = f.matchedRow ?? (await matchChecklistRow(f.content, FIELD_CHECKLIST));
       if (!row) continue;
@@ -348,11 +355,22 @@ export async function generateRegularXlsx(
     }
   }
 
-  // ── 3. 안전보건 서류부문 시트 — 전항목 만점 리셋 후, 같은 항목에 매징된 지적사항은 합쳐서 감점+의견란 기록 ──
+  // 현장부문 점수: 50점 만점에서 행 단위 감점 (xlsx I13 = '안전보건 현장부문'!G166 수식과 동일 논리)
+  let fieldDeduction = 0;
+  for (const { grades } of fieldGroups.values()) {
+    fieldDeduction += grades.includes("위험") ? 2 : 1;
+  }
+  const fieldScore = Math.max(0, 50 - fieldDeduction);
+
   const s2Path = sheetPath["안전보건 서류부문"];
   let s2 = "";
   let stylesXml = await zip.file("xl/styles.xml")!.async("string");
   const wrapStyleCache = new Map<number, number>();
+  const roleGroups: Record<string, { g: number; denom: number }> = {
+    "현장소장": { g: 0, denom: 0 },
+    "관리감독자": { g: 0, denom: 0 },
+    "안전관리자": { g: 0, denom: 0 },
+  };
 
   if (s2Path && zip.file(s2Path)) {
     s2 = await zip.file(s2Path)!.async("string");
@@ -386,12 +404,32 @@ export async function generateRegularXlsx(
 
       s2 = writeText(s2, `H${row}`, combined);
     }
+
+    // 서류부문 점수: 평가대상(현장소장/관리감독자/안전관리자)별 백분율 → 10/5/5 가중합 (xlsx F13과 동일 논리)
+    for (const item of DOC_CHECKLIST) {
+      const roleKey = Object.keys(roleGroups).find((k) => item.group.includes(k));
+      if (!roleKey) continue;
+      const gVal = readNumericCellValue(s2, `G${item.row}`) ?? 0;
+      const { notApplicable, max } = getDocItemTiers(s2, item.row);
+      roleGroups[roleKey].g += gVal;
+      if (!notApplicable) roleGroups[roleKey].denom += max;
+    }
   }
+
+  const pct = (k: string) => (roleGroups[k].denom > 0 ? (100 * roleGroups[k].g) / roleGroups[k].denom : 0);
+  const docScore = pct("현장소장") / 10 + pct("관리감독자") / 5 + pct("안전관리자") / 5;
+
+  const correctionFactor =
+    ((parseFloat(data.monthlyProgressFactor ?? "1") || 1) +
+      (parseFloat(data.riskWorkFactor ?? "1") || 1) +
+      (parseFloat(data.helperOperationFactor ?? "1") || 1)) /
+    3;
+  const deduction = 0; // 가감점 입력 UI 부재 — 우선 0으로 제로
+  const totalScore = (docScore + fieldScore) * correctionFactor + deduction;
 
   zip.file("xl/sharedStrings.xml", ssXml);
   zip.file("xl/styles.xml", stylesXml);
 
-  // ── 4. 구귀시트 호환 문법 보정 + 수식 셀 캠시 제거(모든 시트) + 재강산 한구설정 ──
   for (const sheetName of Object.keys(sheetPath)) {
     const sp = sheetPath[sheetName];
     let xml = sp === s1Path ? s1 : sp === s3Path ? s3 : sp === s2Path ? s2 : await zip.file(sp)!.async("string");
@@ -404,5 +442,6 @@ export async function generateRegularXlsx(
   wbXml = forceFullRecalcOnLoad(wbXml);
   zip.file("xl/workbook.xml", wbXml);
 
-  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  return { buffer, scores: { totalScore, docScore, fieldScore, deduction, correctionFactor } };
 }
