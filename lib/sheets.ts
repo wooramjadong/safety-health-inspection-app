@@ -98,7 +98,7 @@ export async function createSite(input: SiteInput): Promise<string> {
 export async function getSites() {
   const api = await sheets();
   const res = await api.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "현장목록!A2:F" });
-  return (res.data.values ?? []).map(r => ({
+  return (res.data.values ?? []).map((r: any[]) => ({
     id: r[0], siteName: r[1], address: r[2], siteManager: r[3], safetyManager: r[4], phone: r[5],
   }));
 }
@@ -146,7 +146,7 @@ export async function createInspection(input: InspectionInput): Promise<string> 
 export async function getInspections() {
   const api = await sheets();
   const res = await api.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "점검목록!A2:W" });
-  return (res.data.values ?? []).map(r => ({
+  return (res.data.values ?? []).map((r: any[]) => ({
     id: r[0], siteName: r[1], type: r[2],
     inspectionStart: r[3], inspectionEnd: r[4], inspectors: r[5],
     constructionPeriod: r[6], amount: r[7], progress: r[8],
@@ -185,7 +185,7 @@ export async function updateInspectionUrls(
   const api = await sheets();
   const res = await api.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "점검목록!A:A" });
   const rows = res.data.values ?? [];
-  const rowIdx = rows.findIndex((r) => r[0] === inspectionId);
+  const rowIdx = rows.findIndex((r: any[]) => r[0] === inspectionId);
   if (rowIdx === -1) return;
   const sheetRow = rowIdx + 1; // 1-based
 
@@ -229,8 +229,8 @@ export async function getFindingsByInspection(inspectionId: string) {
   const api = await sheets();
   const res = await api.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "지적사항!A2:G" });
   return (res.data.values ?? [])
-    .filter((r) => r[1] === inspectionId)
-    .map((r) => ({
+    .filter((r: any[]) => r[1] === inspectionId)
+    .map((r: any[]) => ({
       id: r[0], inspectionId: r[1], section: r[2], grade: r[3] || undefined,
       content: r[4] ?? "", actionRequest: r[5] ?? "", itemName: r[6] ?? "",
     }));
