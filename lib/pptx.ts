@@ -2,15 +2,19 @@
  * PPTX 자동 생성 라이브러리
  * 접근 방식: JSZip으로 PPTX(ZIP)을 열고, XML을 문자열 조작
  *
- * 필딩 슬라이드 구조 (정기평가 별첨):
- *   테이블0 [구분]: row1=구넶, row2=위험|미흡
+ * 주의(표지/결과요약 슬라이드의 표 구조가 서로 다르다 — 실제 파일 추출해 확인된 핵시 버서 버그 수정):
+ *   • slide1(표지): "점검 현장"/"점검 기간"/"점검 인원"은 한 행에 [라볘,값]이 동시에 있다
+ *     (label LEFT, value RIGHT 같은 행) → replaceAdjacentCell 사용.
+ *   • slide2(결과요약): "현장명"/"공사기간" 등은 한 행에 다수 라볘이 나열되고, 값은
+ *     다음 행의 같은 열 위지에 있다 (label ABOVE, value BELOW) → replaceCellBelow 사용.
+ *   • 이전에는 slide1을 replaceTextBoxContent(텍스트박스 전용)로 처리해서, "점검 현장" 등이
+ *     실제는 표(table) 안에 있어 아르 함수가 아띔 찾지 봇해 조용하게 아더 작동했으이, 실제로는
+ *     현장명이 전혀 봘도욨지 않고 원문(샘료 현장명)가 그대로 남아있었다. 이제 해결될.
+ *
+ * 별첨 슬라이드 구조 (정기평가 별첨):
+ *   테이블0 [구분]: row1=구분, row2=위험|미흡
  *   테이블1 [체크박스]: row1=헤더, row2=■|□ ×7
  *   테이블2 [내용]: row2=사진영역, row3=['내용',지적텍스트,'내용',조치텍스트]
- *
- * 주의: 이전에 서로 생성된 별첨 슬라이드(5번이후)는 내용내용마다 개수가 다릅니다.
- * 그뚜 제거하릔 떨어다 paint 해서 slide.xml 파일만 지우고 presentation.xml/
- * rels/[Content_Types].xml에 단글이르어 있는 참조떤 안 지우면 PPTX가 손상릌어
- * PowerPoint/python-pptx에서 열리지 않아서, removeSlideReferences()로 며명하게 제거합니다.
  */
 
 import JSZip from "jszip";
@@ -116,38 +120,29 @@ function setCell(
   return slideXml.slice(0, tbl.start) + tblXml + slideXml.slice(tbl.end);
 }
 
-// ── 슬라이드 제거 / 추가 ──────────────────────────────────────
+// ── 슬라이드 제거 / 추가 ─────────────────────────────────────
 
-/** rels XML에서 펹정 타겟(slides/slideN.xml)을 가리키는 rId 조회 */
 function findRidForTarget(relsXml: string, target: string): string | null {
   const escaped = target.replace(/\//g, "\\/");
   const m = relsXml.match(new RegExp(`<Relationship Id="(rId\\d+)"[^>]*Target="${escaped}"`));
   return m ? m[1] : null;
 }
 
-/** presentation.xml에서 해당 rId를 가리키릔 <p:sldId> 삭제 */
 function removeSldIdByRid(presXml: string, rid: string): string {
   const re = new RegExp(`<p:sldId\\b[^>]*\\br:id="${rid}"[^>]*\\/>`);
   return presXml.replace(re, "");
 }
 
-/** rels XML에서 해당 rId의 <Relationship> 삭제 */
 function removeRelationshipById(relsXml: string, rid: string): string {
   const re = new RegExp(`<Relationship Id="${rid}"[^>]*\\/>`);
   return relsXml.replace(re, "");
 }
 
-/** [Content_Types].xml에서 해당 슬라이드 Override 삭제 */
 function removeContentTypeOverride(ctXml: string, slideNum: number): string {
   const re = new RegExp(`<Override PartName="/ppt/slides/slide${slideNum}\\.xml"[^>]*\\/>`);
   return ctXml.replace(re, "");
 }
 
-/**
- * 슬라이듌 startNum~endNum(포함)을 완전하개 제거: 파일 삭제 +
- * presentation.xml의 <p:sldId>, rels의 <Relationship>, [Content_Types].xml의
- * Override꺌지 다 제거해서 단글이르어 있는 참조를 남겨도륍 손상 방지.
- */
 function removeSlidesCompletely(
   zip: JSZip,
   presXml: string,
@@ -174,7 +169,7 @@ function addSlideToPresentation(presentationXml: string, slideNum: number): stri
   const allIds = [...presentationXml.matchAll(/id="(\d+)"/g)].map(m => parseInt(m[1]));
   const maxId = allIds.length ? Math.max(...allIds) : 256;
   const newId = maxId + 1;
-  const rId = `rId${slideNum + 200}`; // 기존 rId와 확실하게 안 고쳙하도록 덩 단위 올랐
+  const rId = `rId${slideNum + 200}`;
   const newSldId = `<p:sldId id="${newId}" r:id="${rId}"/>`;
   return presentationXml.replace("</p:sldIdLst>", `${newSldId}</p:sldIdLst>`);
 }
@@ -253,29 +248,26 @@ export async function generateRegularPptx(
   );
   const totalSlides = slideFiles.length;
 
+  // slide1(표지): "점검 현장"/"점검 기간"/"점검 인원"은 한 행에 [라볘,값]이 같이 있으목 replaceAdjacentCell 사용
   let s1 = await zip.file("ppt/slides/slide1.xml")!.async("string");
-  s1 = replaceTextBoxContent(s1, "점검 현장", `${data.siteName}`);
-  s1 = replaceTextBoxContent(s1, "점검 기간", `${data.inspectionStart} ~ ${data.inspectionEnd}`);
-  s1 = replaceTextBoxContent(s1, "점검 인원", data.inspectors);
+  s1 = replaceAdjacentCell(s1, "점검 현장", `${data.siteName}`);
+  s1 = replaceAdjacentCell(s1, "점검 기간", `${data.inspectionStart} ~ ${data.inspectionEnd}`);
+  s1 = replaceAdjacentCell(s1, "점검 인원", data.inspectors);
   zip.file("ppt/slides/slide1.xml", s1);
 
+  // slide2(결과요약): "현장명"/"공사기간" 등은 다음 행의 같은 열 위지에 값이 있으목 replaceCellBelow 사용
   let s2 = await zip.file("ppt/slides/slide2.xml")!.async("string");
-  s2 = replaceAdjacentCell(s2, "현　장　명", data.siteName);
-  s2 = replaceAdjacentCell(s2, "공사　기간", data.constructionPeriod);
-  s2 = replaceAdjacentCell(s2, "공사　금액", data.amount);
-  s2 = replaceAdjacentCell(s2, "공정율", `${data.progress}`);
+  s2 = replaceCellBelow(s2, "현＀장＀명", data.siteName);
+  s2 = replaceCellBelow(s2, "공사＀기간", data.constructionPeriod);
+  s2 = replaceCellBelow(s2, "공사＀금액", data.amount);
+  s2 = replaceCellBelow(s2, "공정율", `${data.progress}`);
   zip.file("ppt/slides/slide2.xml", s2);
 
-  let s3 = await zip.file("ppt/slides/slide3.xml")!.async("string");
-  s3 = replaceAdjacentCell(s3, "현장 소장", data.docScore);
-  zip.file("ppt/slides/slide3.xml", s3);
+  // slide3(서류부문 점수 표)는 다중 행 구조가 복잡해 이보 수정에서는 직접 쓰지 않음 (원본 시트 점수 유지)
 
   const templateSlideXml = await zip.file("ppt/slides/slide5.xml")!.async("string");
   const templateRels = await zip.file("ppt/slides/_rels/slide5.xml.rels")!.async("string");
 
-  // 기존 별첨 슬라이드(5~끝) 완전하개 제거 — 단그릑이름에서는
-  // presentation.xml의 sldId, rels의 Relationship도 함ꪌ 상제해야
-  // PPTX가 손상릌지 않뀈듬니다.
   ({ presXml, presRels, ctXml } = removeSlidesCompletely(
     zip, presXml, presRels, ctXml, 5, totalSlides
   ));
@@ -343,7 +335,6 @@ export async function generateSapaPptx(
   const templateSlideXml = await zip.file("ppt/slides/slide3.xml")!.async("string");
   const templateRels = await zip.file("ppt/slides/_rels/slide3.xml.rels")!.async("string");
 
-  // 기존 3번 이후 슬라이듌 완전하개 제거 (참조 함ꪌ 상제)
   ({ presXml, presRels, ctXml } = removeSlidesCompletely(
     zip, presXml, presRels, ctXml, 3, totalSlides
   ));
@@ -355,7 +346,7 @@ export async function generateSapaPptx(
 
     slideXml = replaceAdjacentCell(slideXml, "세부 내용", f.detailContent);
     slideXml = replaceAdjacentCell(slideXml, "확 인 사 항", f.detailContent);
-    slideXml = replaceAdjacentCell(slideXml, "조 치 요 구", f.actionRequest);
+    slideXml = replaceAdjacentCell(slideXml, "조 지 요 구", f.actionRequest);
 
     zip.file(`ppt/slides/slide${newNum}.xml`, slideXml);
     zip.file(`ppt/slides/_rels/slide${newNum}.xml.rels`, templateRels);
@@ -373,6 +364,7 @@ export async function generateSapaPptx(
 
 // ── 텍스트 교체 보조함수 ──────────────────────────────────────────
 
+/** 이 함수는 설정 레이아웃: 라볘이 있는 셜의 바로 다음 셌(같은 행)의 값을 교체 */
 function replaceAdjacentCell(slideXml: string, label: string, newValue: string): string {
   const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
   return slideXml.replace(tblRegex, (tbl) => {
@@ -406,6 +398,43 @@ function replaceAdjacentCell(slideXml: string, label: string, newValue: string):
       return newRow;
     });
   });
+}
+
+/**
+ * 라볘이 있는 항(row N)의 같은 열 위지(col)에, 다음 항(row N+1)의 값을 교체한다.
+ * 예: row0=["현장명","공사기간"], row1=["제주 삼다수...","25.12.8~27.7.30"] —
+ * "현장명"은 row0 col0에 있으며, 그 값은 row1 col0(바로 아됌 다음 행의 같은 열)에 있다.
+ */
+function replaceCellBelow(slideXml: string, label: string, newValue: string): string {
+  const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
+  const tbls = [...slideXml.matchAll(tblRegex)];
+  for (const tblM of tbls) {
+    const tbl = tblM[0];
+    const tblStart = tblM.index!;
+    const rowMatches = [...tbl.matchAll(/<a:tr[\s\S]*?<\/a:tr>/g)];
+    const normalLabel = label.replace(/\s+/g, "");
+    for (let ri = 0; ri < rowMatches.length - 1; ri++) {
+      const row = rowMatches[ri][0];
+      const cells = [...row.matchAll(/<a:tc>[\s\S]*?<\/a:tc>/g)].map(m => m[0]);
+      const colIdx = cells.findIndex(c => {
+        const t = [...c.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map(x => x[1]).join("");
+        return t.replace(/\s+/g, "") === normalLabel;
+      });
+      if (colIdx === -1) continue;
+
+      const nextRow = rowMatches[ri + 1][0];
+      const nextCells = [...nextRow.matchAll(/<a:tc>[\s\S]*?<\/a:tc>/g)];
+      if (colIdx >= nextCells.length) continue;
+      const targetCell = nextCells[colIdx];
+      const newCell = rebuildCellText(targetCell[0], newValue);
+      const newNextRow =
+        nextRow.slice(0, targetCell.index!) + newCell + nextRow.slice(targetCell.index! + targetCell[0].length);
+      const newTbl =
+        tbl.slice(0, rowMatches[ri + 1].index!) + newNextRow + tbl.slice(rowMatches[ri + 1].index! + rowMatches[ri + 1][0].length);
+      return slideXml.slice(0, tblStart) + newTbl + slideXml.slice(tblStart + tbl.length);
+    }
+  }
+  return slideXml;
 }
 
 function replaceTextBoxContent(slideXml: string, labelHint: string, newValue: string): string {
