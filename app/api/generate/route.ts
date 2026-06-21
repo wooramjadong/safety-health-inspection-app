@@ -6,11 +6,13 @@
  * 사용자가 AI 매징을 사전 확인·수정한 경우 전도되어, 실제 생성 시에는 다시 AI
  * 호다하지 않고 사용자가 지정한 행을 그대로 쓴다.
  *
+ * 순서가 중요함: xlsx를 도워 생성해서 체크리스트 기본 점수(scores)를 자동으로 계산한
+ * 다음, 그 값을 PPTX의 슬라이드2 점수표에 그대로 쓴다 — 이렇게 해야 둘 다의 총점/서류부문/
+ * 현장부문 점수가 언제도 일썱한다.
+ *
  * 1) Sheets에서 점검 + 지적사항 조회
- * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상)
- * 3) 템플릿 PPTX/xlsx 다운로드 → 데이타 채움
- *    (xlsx 평가결과 시트의 총점/점수 수식은 체크리스트 입력에 따라 자동 계산되목로 직접 쓰지 않아.
- *    보정계수(O13)도 동일하게 하위 3건(P15/P16/P17)를 전도해 수식이 자동 계산하게 한다.)
+ * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상, 1회만 요약)
+ * 3) xlsx 생성 (scores 회수) → PPTX 생성 (같은 findings.content + scores 장입)
  * 4) Drive 업로드 → 현장 조치링크용 토큰 업데이트
  * 5) 다운로드 URL 반환
  */
@@ -46,7 +48,7 @@ export async function POST(req: NextRequest) {
     const fieldRawFindings = rawFindings.filter((f: any) => f.section === "현장");
     const docRawFindings = rawFindings.filter((f: any) => f.section === "서류");
 
-    // 2. Gemini 요약 — 현장부문 지적사항만 별첨 슬라이드로 생성·요약
+    // 2. Gemini 요약 — 현장부문 지적사항만 단 1회 요약해서 PPTX/xlsx 양쪽에 동일하게 장입
     const findings: Finding[] = await Promise.all(
       fieldRawFindings.map(async (f: any, idx: number) => {
         const content = await summarizeForCell(f.content, CELL_LIMITS.별첨_내용);
@@ -69,33 +71,9 @@ export async function POST(req: NextRequest) {
     let xlsxUrl = "";
 
     if (insp.type === "정기평가") {
-      // PPTX (별첨 슬라이드는 현장부문 지적사항만 대상)
-      const pptxTpl = await downloadFileAsBuffer(REGULAR_PPTX_ID);
-      const pptxBuf = await generateRegularPptx(pptxTpl, {
-        siteName: insp.siteName,
-        constructionPeriod: insp.constructionPeriod ?? "",
-        amount: insp.amount ?? "",
-        progress: insp.progress ?? "",
-        mainWork: insp.mainWork ?? "",
-        inspectionStart: insp.inspectionStart ?? "",
-        inspectionEnd: insp.inspectionEnd ?? "",
-        inspectors: insp.inspectors ?? "",
-        docScore: insp.docScore ?? "",
-        fieldScore: insp.fieldScore ?? "",
-        findings,
-      });
-      const pptxResult = await uploadToDrive(
-        `${baseName}_정기평가.pptx`,
-        pptxBuf,
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        RESULT_FOLDER
-      );
-      pptxUrl = pptxResult.webViewLink;
-
-      // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 하고,
-      // review 화맩에서 사용자가 확정한 matchOverrides는 그대로 적용.
+      // 3-1. xlsx 먼저 생성 — 체크리스트 입력에서 자동 계산된 점수(scores)를 함껸 회수
       const xlsxTpl = await downloadFileAsBuffer(REGULAR_XLSX_ID);
-      const xlsxBuf = await generateRegularXlsx(xlsxTpl, {
+      const { buffer: xlsxBuf, scores } = await generateRegularXlsx(xlsxTpl, {
         siteName: insp.siteName,
         inspectionPeriod: `${insp.inspectionStart} ~ ${insp.inspectionEnd}`,
         inspectors: insp.inspectors ?? "",
@@ -123,6 +101,30 @@ export async function POST(req: NextRequest) {
         RESULT_FOLDER
       );
       xlsxUrl = xlsxResult.webViewLink;
+
+      // 3-2. PPTX 생성 — xlsx와 동일한 findings.content + 방금 구한 scores를 그대로 전도
+      const pptxTpl = await downloadFileAsBuffer(REGULAR_PPTX_ID);
+      const pptxBuf = await generateRegularPptx(pptxTpl, {
+        siteName: insp.siteName,
+        constructionPeriod: insp.constructionPeriod ?? "",
+        amount: insp.amount ?? "",
+        progress: insp.progress ?? "",
+        mainWork: insp.mainWork ?? "",
+        inspectionStart: insp.inspectionStart ?? "",
+        inspectionEnd: insp.inspectionEnd ?? "",
+        inspectors: insp.inspectors ?? "",
+        siteManager: insp.siteManager ?? "",
+        safetyManager: insp.safetyManager ?? "",
+        scores,
+        findings,
+      });
+      const pptxResult = await uploadToDrive(
+        `${baseName}_정기평가.pptx`,
+        pptxBuf,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        RESULT_FOLDER
+      );
+      pptxUrl = pptxResult.webViewLink;
 
     } else if (insp.type === "준수평가") {
       const pptxTpl = await downloadFileAsBuffer(SAPA_PPTX_ID);
