@@ -4,22 +4,26 @@
  * 시트 구조 (제주삼다수 템플릿 기준, 분석 완료):
  *   1. "평가 결과"        — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업
  *                          C9=공사금액 F9=공사기간 J9=현장소장/안전관리자
- *                          D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함! 전탠 수식 셀임
- *                          (D13=SUM(F13:K13)*O13+L13, F13=SUM(F15:H17),
- *                           I13='안전보건 현장부문'!G166, L13=G26, O13=SUM(P15:P17)/3)
- *                          → 하위 체크리스트 접도가 완료되면 자동 장사될.
+ *                          D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함! 전탠 수식 셀임.
+ *                          D13=SUM(F13:K13)*O13+L13, F13=SUM(F15:H17) (F15=P21/10 등),
+ *                          P21/P22/P23='안전보건 서류부문'!H6/H50/H87 를 참조,
+ *                          I13='안전보건 현장부문'!G166, L13=G26, O13=SUM(P15:P17)/3
  *   2. "안전보건 서류부문" — 항목당 3개 등급티어(E{row},E{row+1},E{row+2}=0/중/만점)
- *                          G{row}=해당 항목 점수(만점 때 의견없잌), H{row}=의견(보조)
- *                          일썱: 만점 ≡ 지적없음, 만점보다 적으뭴 의견란 필수
+ *                          G{row}=해당 항목 점수, H{row}=의견(보조)
+ *                          G6/G50/G87=소개 합산, H6/H50/H87=백분율(이게 평가결과!P21~23로 전도될)
+ *                          일보: 만점 ≡ 지적없음, 만점보다 적으본이 적의견란 필수
+ *                          주의: 일부 항목은 row+2 셀이 "N/A"이어서 H6/H50/H87 분부에서 제외되면—
+ *                          이런 항목은 점수 0륐 처리해야 함 (아니면 분자에만 점수가 추가되어 100% 초과)
  *   3. "안전보건 현장부문" — 체크리스트 158항목(FIELD_CHECKLIST). E미흡=1/F위험=2, G{row}=발건사항
  *   4. "Sheet3"            — 가감점 보정표 (고정값, 미사용)
  *
- * 지적사항 텍스트는 PPTX 별첨 슬라이드와 100% 동일해야 함 — Gemini가 가장 유사한
- * 체크리스트 항목을 찾아 해당 행에 등곁/내용을 기록한다 (matchChecklistRow).
+ * ⚠️ 원본 템플릿(제주삼다수 등)은 이미 수행된 실제 점검 결과를 그대로 지니고 있어서,
+ * 새 점검 생성 시에는 체크리스트 전항목을 만점/지적없음 기본값으로 먼저 리셋한 후, 매징된
+ * 항목만 감점/내용을 기록한다.
  *
- * ⚠️ 원눉 도해 템플릿(제주삼다수/괴주 닱)은 이미 수행된 실제 점검 결과르 그대로 지니고 있으목,
- * 새 점검을 생성할 띘 그 잔익도르가 설계 그대로 따끎거 면 면되지 않으므롌이띴,
- * 체크리스트 전 항목을 먼저 "잡만·지적없음" 기본값으로 리셋한 다음, 매징된 항목만 감점/내용을 기록한다.
+ * 중요: 다수 수식의 총점이 설정될 따 계산될 있는 수식 셀(G6,H6,P21,F13,D13 등)의 캠시된 <v>
+ * 값이 업데이트되지 않을 수 있어 엔맄 계산(LibreOffice/Excel)가 잡에지 악을 수다— 따라서
+ * 마지막에 모든 시트의 쯄식 셀 캠시된 값을 제거해 열 띘 잡에 장제로 도롭다 (stripFormulaCache).
  */
 
 import JSZip from "jszip";
@@ -31,14 +35,14 @@ export type DocFindingInput = { content: string; matchedRow?: number };
 
 export type RegularXlsxInput = {
   siteName: string;
-  inspectionPeriod: string;     // F7 (예: "2026-06-10 ~ 06-11")
-  inspectors: string;           // J7
-  mainWork: string;             // N7
-  amount: string;               // C9 (숫자 또는 "47,316,083,290")
-  constructionPeriod: string;   // F9
-  managerInfo: string;          // J9 (현장소장/안전관리자 이맄)
-  fieldFindings: FieldFindingInput[]; // 안전보건 현장부문 지적사항 (PPTX 슬라이드4와 동일 텍스트)
-  docFindings: DocFindingInput[];     // 안전보건 서류부문 지적사항 (PPTX 슬라이드3과 동일 텍스트)
+  inspectionPeriod: string;
+  inspectors: string;
+  mainWork: string;
+  amount: string;
+  constructionPeriod: string;
+  managerInfo: string;
+  fieldFindings: FieldFindingInput[];
+  docFindings: DocFindingInput[];
 };
 
 // ── 셀 참조 유틸 ─────────────────────────────────────────────────────────────────────
@@ -58,16 +62,6 @@ function escXml(s: string): string {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// ── sharedStrings 조작 ────────────────────────────────────────────────────
-
-function buildSharedStrings(ssXml: string): string[] {
-  const arr: string[] = [];
-  for (const m of ssXml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
-    arr.push([...m[1].matchAll(/<t[^>]*>([^<]*)<\/t>/g)].map((x) => x[1]).join(""));
-  }
-  return arr;
-}
-
 function addSharedString(sharedXml: string, value: string): { xml: string; idx: number } {
   const count = [...sharedXml.matchAll(/<si>/g)].length;
   const newSi = `<si><t xml:space="preserve">${escXml(value)}</t></si>`;
@@ -76,8 +70,6 @@ function addSharedString(sharedXml: string, value: string): { xml: string; idx: 
   xml = xml.replace(/(<sst[^>]*\buniqueCount=")(\d+)(")/, (_, p, n, s) => `${p}${parseInt(n) + 1}${s}`);
   return { xml, idx: count };
 }
-
-// ── 행 안에서 셀 삽입 위아(열 순서) 찾기 ──────────────────────────
 
 function insertCellInOrder(rowContent: string, ref: string, newCellXml: string): string {
   const target = colToNum(parseRef(ref).col);
@@ -106,30 +98,30 @@ function getCellRaw(sheetXml: string, ref: string): { attrs: string; inner: stri
   return m ? { attrs: m[1] || "", inner: m[2] || "" } : null;
 }
 
-/** 셀의 조력된 값 읽기 (수식 셀이어뛌 관계없이 캐시/원시값 기준). 숫자이고 유한한 경우만 반환, 아니면 null */
+/** 셀의 캐시/원시 <v> 값을 수자로 읽음. 수식의 캠시값이 엄고 N/A릅 경우 null */
 function readNumericCellValue(sheetXml: string, ref: string): number | null {
   const c = getCellRaw(sheetXml, ref);
   if (!c) return null;
   const vM = c.inner.match(/<v>([^<]*)<\/v>/);
-  let raw: string | null = vM ? vM[1] : null;
-  if (raw === null) {
-    // 수식만 있고 캐시값이 없는 경우, 수식 마지막 숫자 추출 (폴벱)
-    const fM = c.inner.match(/<f>([\s\S]*?)<\/f>/);
-    if (fM) {
-      const numM = fM[1].match(/(\d+(\.\d+)?)\)/);
-      if (numM) raw = numM[1];
-    }
-  }
-  if (raw === null) return null;
-  const n = parseFloat(raw);
+  if (!vM) return null;
+  const n = parseFloat(vM[1]);
   return Number.isFinite(n) ? n : null;
 }
 
-/** 셀에 공유문자열(텍스트) 기록. 기존 셀 있으면 style 보존하며 교체, 없으면 행 안에 순서대로 삽입 */
+/** 해당 셀의 캐시된 <v> 결개개 정확히 "N/A" 문자열인지 확인 (수식 소스코돜 자이귶 IF(...,"N/A",..) 자체에도
+ * "N/A" 문자열이 활장되어 있으목로, 절대 <f> 다이 아니라 <v> 결개개만 확인해야 함 */
+function isNACell(sheetXml: string, ref: string): boolean {
+  const c = getCellRaw(sheetXml, ref);
+  if (!c) return false;
+  const vM = c.inner.match(/<v>([^<]*)<\/v>/);
+  if (!vM) return false;
+  return /^N\/A$/i.test(vM[1].trim());
+}
+
 function setCellSharedString(sheetXml: string, ref: string, ssIdx: number): string {
   const { row } = parseRef(ref);
   const rb = getRowBlock(sheetXml, row);
-  if (!rb) return sheetXml; // 해당 행이 템플릿에 없으으면 스킵
+  if (!rb) return sheetXml;
 
   const cellRe = new RegExp(`<c r="${ref}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`);
   let newContent: string;
@@ -145,7 +137,6 @@ function setCellSharedString(sheetXml: string, ref: string, ssIdx: number): stri
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-/** 셀에 숫자값 기록 (수식이 없는 일반 입력 셀에만 사용해야 함!) */
 function setCellNumber(sheetXml: string, ref: string, value: number): string {
   const { row } = parseRef(ref);
   const rb = getRowBlock(sheetXml, row);
@@ -165,7 +156,6 @@ function setCellNumber(sheetXml: string, ref: string, value: number): string {
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-/** 셀 내용을 완전히 모음 (style은 보존). 수식이 엄는 입력 셀 리셋용 */
 function clearCell(sheetXml: string, ref: string): string {
   const { row } = parseRef(ref);
   const rb = getRowBlock(sheetXml, row);
@@ -180,15 +170,25 @@ function clearCell(sheetXml: string, ref: string): string {
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-/** 서류부문 항목의 만점/중간값 솨타결과: 해당 항목은 row,row+1,row+2 세 줄에 0/중/만점 3개 등급티어가 있다 */
-function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: number } {
+/**
+ * 서류부문 항목의 등급티어 조회: row, row+1, row+2 세 줄에 0/중/만점 등급이 있다.
+ * row+2(만점 참조셀)가 "N/A"닌 동일 이 항목은 H6/H50/H87 분부에서 제외되르니롌,
+ * 점수를 0으로 둔 익에래 이 구자도롭해야 한다 (아니면 백분윤이 100%를 초과함).
+ */
+function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: number; notApplicable: boolean } {
+  if (isNACell(sheetXml, `E${row + 2}`)) return { max: 0, mid: 0, notApplicable: true };
   const e0 = readNumericCellValue(sheetXml, `E${row}`);
   const e1 = readNumericCellValue(sheetXml, `E${row + 1}`);
   const e2 = readNumericCellValue(sheetXml, `E${row + 2}`);
   const tiers = [e0, e1, e2].filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-  if (tiers.length === 0) return { max: 10, mid: 5 }; // 파악 불가(N/A 항목 등) 시 안전한 기본값
+  if (tiers.length === 0) return { max: 10, mid: 5, notApplicable: false };
   const sorted = [...tiers].sort((a, b) => a - b);
-  return { max: sorted[sorted.length - 1], mid: sorted[Math.floor(sorted.length / 2)] };
+  return { max: sorted[sorted.length - 1], mid: sorted[Math.floor(sorted.length / 2)], notApplicable: false };
+}
+
+/** 해당 시트의 모돈 수식 셀에서 캐시된 <v> 결개를 제거 (수식은 유지) — 열 띘 잡에 강제 장제로 재계산되게 함 */
+function stripFormulaCache(sheetXml: string): string {
+  return sheetXml.replace(/(<c[^>]*>)(<f>[\s\S]*?<\/f>)<v>[^<]*<\/v>(<\/c>)/g, "$1$2$3");
 }
 
 // ── 시트 이렬 → 파일 경로 매핵 ──────────────────────────────────
@@ -210,7 +210,6 @@ async function buildSheetPathMap(zip: JSZip): Promise<Record<string, string>> {
   return map;
 }
 
-/** Excel/LibreOffice가 파일을 열 띘 전원 재갠산하등띴 설정 — 안하띘휄 수정된 체크리스트 값이 반영되지 않을 수 있음 */
 function forceFullRecalcOnLoad(workbookXml: string): string {
   if (!workbookXml.includes("<calcPr")) {
     return workbookXml.replace("</workbook>", '<calcPr fullCalcOnLoad="1"/></workbook>');
@@ -241,8 +240,9 @@ export async function generateRegularXlsx(
 
   // ── 1. 평가 결과 시트 — 일반 입력값만 쓴다. D13/F13/I13/L13/O13(수식)은 절대 건드리지 않아 ──
   const s1Path = sheetPath["평가 결과"];
+  let s1 = "";
   if (s1Path && zip.file(s1Path)) {
-    let s1 = await zip.file(s1Path)!.async("string");
+    s1 = await zip.file(s1Path)!.async("string");
     s1 = writeText(s1, "B7", data.siteName);
     s1 = writeText(s1, "F7", data.inspectionPeriod);
     s1 = writeText(s1, "J7", data.inspectors);
@@ -251,22 +251,19 @@ export async function generateRegularXlsx(
     s1 = setCellNumber(s1, "C9", amountNum);
     s1 = writeText(s1, "F9", data.constructionPeriod);
     s1 = writeText(s1, "J9", data.managerInfo);
-    zip.file(s1Path, s1);
   }
 
   // ── 2. 안전보건 현장부문 시트 — 전원 리셋('지적없음' 기본값) 후 매징된 항목만 등곁/내용 기록 ──
   const s3Path = sheetPath["안전보건 현장부문"];
+  let s3 = "";
   if (s3Path && zip.file(s3Path)) {
-    let s3 = await zip.file(s3Path)!.async("string");
-
-    // 체크리스트 전항목 리셋: 이봇 템플릿에 다리 점검 결과가 남아있을 수 있으목, 새 점검에는 반영되지 않아야 함
+    s3 = await zip.file(s3Path)!.async("string");
     for (const item of FIELD_CHECKLIST) {
       s3 = clearCell(s3, `D${item.row}`);
       s3 = clearCell(s3, `E${item.row}`);
       s3 = clearCell(s3, `F${item.row}`);
       s3 = clearCell(s3, `G${item.row}`);
     }
-
     for (const f of data.fieldFindings) {
       const row = f.matchedRow ?? (await matchChecklistRow(f.content, FIELD_CHECKLIST));
       if (!row) continue;
@@ -275,34 +272,40 @@ export async function generateRegularXlsx(
       s3 = setCellNumber(s3, `${col}${row}`, val);
       s3 = writeText(s3, `G${row}`, f.content);
     }
-    zip.file(s3Path, s3);
   }
 
   // ── 3. 안전보건 서류부문 시트 — 전항목 만점 리셋 후 매징된 항목만 감점+의견란 기록 ──
   const s2Path = sheetPath["안전보건 서류부문"];
+  let s2 = "";
   if (s2Path && zip.file(s2Path)) {
-    let s2 = await zip.file(s2Path)!.async("string");
+    s2 = await zip.file(s2Path)!.async("string");
 
-    // 체크리스트 전항목 리셋: 만점(=지적없음) 상태로 초기화
+    // 원반 리셋: N/A 항목은 0점, 다르고 항목은 만점과 함껸 의견란 초기화
     for (const item of DOC_CHECKLIST) {
-      const { max } = getDocItemTiers(s2, item.row);
-      s2 = setCellNumber(s2, `G${item.row}`, max);
+      const { max, notApplicable } = getDocItemTiers(s2, item.row);
+      s2 = setCellNumber(s2, `G${item.row}`, notApplicable ? 0 : max);
       s2 = clearCell(s2, `H${item.row}`);
     }
 
     for (const f of data.docFindings) {
       const row = f.matchedRow ?? (await matchChecklistRow(f.content, DOC_CHECKLIST));
       if (!row) continue;
-      const { mid } = getDocItemTiers(s2, row);
-      s2 = setCellNumber(s2, `G${row}`, mid); // 만점보다 낮은 점수로 감점 — 의견란이 있다는 말은 감점이 있다는 뛀
+      const { mid, notApplicable } = getDocItemTiers(s2, row);
+      s2 = setCellNumber(s2, `G${row}`, notApplicable ? 0 : mid);
       s2 = writeText(s2, `H${row}`, f.content);
     }
-    zip.file(s2Path, s2);
   }
 
   zip.file("xl/sharedStrings.xml", ssXml);
 
-  // ── 4. 열 띘 전원 재갠산되등띴 설정 (수정된 체크리스트 값이 상단 수식에 즉시 반영되게) ──
+  // ── 4. 쯄식 셀 캠시 제거(모든 시트) + 재계산 핬랈강 설정 — 소개/총점이 강제로 새롬감삼되게 함 ──
+  for (const sheetName of Object.keys(sheetPath)) {
+    const sp = sheetPath[sheetName];
+    let xml = sp === s1Path ? s1 : sp === s3Path ? s3 : sp === s2Path ? s2 : await zip.file(sp)!.async("string");
+    xml = stripFormulaCache(xml);
+    zip.file(sp, xml);
+  }
+
   let wbXml = await zip.file("xl/workbook.xml")!.async("string");
   wbXml = forceFullRecalcOnLoad(wbXml);
   zip.file("xl/workbook.xml", wbXml);
