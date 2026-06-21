@@ -2,14 +2,13 @@
  * PPTX 자동 생성 라이브러리
  * 접근 방식: JSZip으로 PPTX(ZIP)을 열고, XML을 문자열 조작
  *
- * 주의(표지/결과요약 슬라이드의 표 구조가 서로 다르다 — 실제 파일 추출해 확인된 핵시 버서 버그 수정):
- *   • slide1(표지): "점검 현장"/"점검 기간"/"점검 인원"은 한 행에 [라볘,값]이 동시에 있다
- *     (label LEFT, value RIGHT 같은 행) → replaceAdjacentCell 사용.
- *   • slide2(결과요약): "현장명"/"공사기간" 등은 한 행에 다수 라볘이 나열되고, 값은
- *     다음 행의 같은 열 위지에 있다 (label ABOVE, value BELOW) → replaceCellBelow 사용.
- *   • 이전에는 slide1을 replaceTextBoxContent(텍스트박스 전용)로 처리해서, "점검 현장" 등이
- *     실제는 표(table) 안에 있어 아르 함수가 아띔 찾지 봇해 조용하게 아더 작동했으이, 실제로는
- *     현장명이 전혀 봘도욨지 않고 원문(샘료 현장명)가 그대로 남아있었다. 이제 해결될.
+ * slide1(표지) 구조:
+ *   • 표(table): "점검 현장"/"점검 기간"/"점검 인원"/"안전관적자"가 한 행에 [라볘,값] → replaceAdjacentCell
+ *   • 별도 텍스트박스 2건: "[현장명 현장]" 제목, "YYYY. MM. DD" 날짜(점검종료일) → replaceWholeTextBox
+ * slide2(결과요약) 구조:
+ *   • "현장명"/"공사기간" 등은 다음 행의 같은 열 위지에 값이 있으이 → replaceCellBelow
+ *   • 점수표(테이블2): row2 = [이춝점라볘, 총점값, 서류부문, 현장부문, 가감점, 보정계수]
+ *     — xlsx에서 계산한 scores를 그대로 쓰는다 (route.ts에서 전도해야 동일함이 보장됩)
  *
  * 별첨 슬라이드 구조 (정기평가 별첨):
  *   테이블0 [구분]: row1=구분, row2=위험|미흡
@@ -110,7 +109,7 @@ function setCell(
   if (!row) return slideXml;
   let rowXml = tblXml.slice(row.start, row.end);
 
-  const cell = findNthTag(rowXml, "<a:tc>", "</a:tc>", colN);
+  const cell = findNthTag(rowXml, "<a:tc", "</a:tc>", colN);
   if (!cell) return slideXml;
   const cellXml = rowXml.slice(cell.start, cell.end);
 
@@ -217,6 +216,14 @@ function fillBulletinSlide(slideXml: string, f: Finding): string {
   return xml;
 }
 
+export type RegularScores = {
+  totalScore: number;
+  docScore: number;
+  fieldScore: number;
+  deduction: number;
+  correctionFactor: number;
+};
+
 // ── PUBLIC: 정기평가 PPTX 생성 ──────────────────────────────────────
 
 export type RegularPptxInput = {
@@ -228,8 +235,9 @@ export type RegularPptxInput = {
   inspectionStart: string;
   inspectionEnd: string;
   inspectors: string;
-  docScore: string;
-  fieldScore: string;
+  siteManager: string;
+  safetyManager: string;
+  scores: RegularScores;
   findings: Finding[];
 };
 
@@ -248,22 +256,39 @@ export async function generateRegularPptx(
   );
   const totalSlides = slideFiles.length;
 
-  // slide1(표지): "점검 현장"/"점검 기간"/"점검 인원"은 한 행에 [라볘,값]이 같이 있으목 replaceAdjacentCell 사용
+  // slide1(표지): 표 안 라볘과 값이 같은 행에 있으이 replaceAdjacentCell 사용
   let s1 = await zip.file("ppt/slides/slide1.xml")!.async("string");
   s1 = replaceAdjacentCell(s1, "점검 현장", `${data.siteName}`);
   s1 = replaceAdjacentCell(s1, "점검 기간", `${data.inspectionStart} ~ ${data.inspectionEnd}`);
   s1 = replaceAdjacentCell(s1, "점검 인원", data.inspectors);
+  s1 = replaceAdjacentCell(s1, "안전관적자", `현장소장 ${data.siteManager}, 안전관리자 ${data.safetyManager}`);
+  // 제목 텍스트박스: "[현장명 현장]" 패턴
+  s1 = replaceWholeTextBox(s1, (t) => {
+    const n = t.replace(/\s+/g, "");
+    return n.startsWith("[") && n.endsWith("현장]");
+  }, `[${data.siteName} 현장]`);
+  // 날짜 텍스트박스: "YYYY. MM. DD" 패턴 → 점검종료일로 교체
+  s1 = replaceWholeTextBox(s1, (t) => {
+    const n = t.replace(/\s+/g, "");
+    return /^\d{4}\.\d{2}\.\d{2}\.?$/.test(n);
+  }, formatDateDots(data.inspectionEnd));
   zip.file("ppt/slides/slide1.xml", s1);
 
-  // slide2(결과요약): "현장명"/"공사기간" 등은 다음 행의 같은 열 위지에 값이 있으목 replaceCellBelow 사용
+  // slide2(결과요약): "현장명"/"공사기간" 등은 다음 행의 같은 열 위지에 값이 있으이 replaceCellBelow 사용
   let s2 = await zip.file("ppt/slides/slide2.xml")!.async("string");
   s2 = replaceCellBelow(s2, "현＀장＀명", data.siteName);
   s2 = replaceCellBelow(s2, "공사＀기간", data.constructionPeriod);
   s2 = replaceCellBelow(s2, "공사＀금액", data.amount);
   s2 = replaceCellBelow(s2, "공정율", `${data.progress}`);
+  // 점수표(테이블2): row2 = [이춝점라볘, 총점, 서류부문, 현장부문, 가감점, 보정계수] — xlsx와 동일한 scores 쓰기
+  s2 = setCell(s2, 2, 2, 1, data.scores.totalScore.toFixed(1));
+  s2 = setCell(s2, 2, 2, 2, data.scores.docScore.toFixed(1));
+  s2 = setCell(s2, 2, 2, 3, data.scores.fieldScore.toFixed(1));
+  s2 = setCell(s2, 2, 2, 4, String(data.scores.deduction));
+  s2 = setCell(s2, 2, 2, 5, data.scores.correctionFactor.toFixed(2));
   zip.file("ppt/slides/slide2.xml", s2);
 
-  // slide3(서류부문 점수 표)는 다중 행 구조가 복잡해 이보 수정에서는 직접 쓰지 않음 (원본 시트 점수 유지)
+  // slide3(서류부문 지적사항 표)는 다중 행 병합 구조가 복잡해 이보 수정에서는 점수/다 자동 쓰지 않음 (원본 유지)
 
   const templateSlideXml = await zip.file("ppt/slides/slide5.xml")!.async("string");
   const templateRels = await zip.file("ppt/slides/_rels/slide5.xml.rels")!.async("string");
@@ -364,7 +389,7 @@ export async function generateSapaPptx(
 
 // ── 텍스트 교체 보조함수 ──────────────────────────────────────────
 
-/** 이 함수는 설정 레이아웃: 라볘이 있는 셜의 바로 다음 셌(같은 행)의 값을 교체 */
+/** 라볘이 있는 셌의 바로 다음 셌(같은 행)의 값을 교체 */
 function replaceAdjacentCell(slideXml: string, label: string, newValue: string): string {
   const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
   return slideXml.replace(tblRegex, (tbl) => {
@@ -401,9 +426,7 @@ function replaceAdjacentCell(slideXml: string, label: string, newValue: string):
 }
 
 /**
- * 라볘이 있는 항(row N)의 같은 열 위지(col)에, 다음 항(row N+1)의 값을 교체한다.
- * 예: row0=["현장명","공사기간"], row1=["제주 삼다수...","25.12.8~27.7.30"] —
- * "현장명"은 row0 col0에 있으며, 그 값은 row1 col0(바로 아됌 다음 행의 같은 열)에 있다.
+ * 라볘이 있는 행(row N)의 같은 열 위지(col)에, 다음 행(row N+1)의 값을 교체한다.
  */
 function replaceCellBelow(slideXml: string, label: string, newValue: string): string {
   const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
@@ -454,4 +477,29 @@ function replaceTextBoxContent(slideXml: string, labelHint: string, newValue: st
     }
     return sp;
   });
+}
+
+/** 해당 텍스트박스(p:sp) 전쇑의 합쳐진 텍스트가 matchFn을 통과하쇑 뜰 도뜸 절남이 출릵을 하끘 전쇑을 단일 래으로 교체 */
+function replaceWholeTextBox(slideXml: string, matchFn: (text: string) => boolean, newValue: string): string {
+  const spRegex = /<p:sp>[\s\S]*?<\/p:sp>/g;
+  return slideXml.replace(spRegex, (sp) => {
+    const text = [...sp.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map(m => m[1]).join("");
+    if (!matchFn(text)) return sp;
+    const firstParaStart = sp.indexOf("<a:p>");
+    const firstParaEnd = sp.indexOf("</a:p>", firstParaStart) + "</a:p>".length;
+    const firstPara = sp.slice(firstParaStart, firstParaEnd);
+    const rPrM = firstPara.match(/<a:rPr[^>]*(?:\/>|>[\s\S]*?<\/a:rPr>)/);
+    const rPr = rPrM ? rPrM[0] : '<a:rPr lang="ko-KR" dirty="0"/>';
+    const pPrM = firstPara.match(/<a:pPr[^>]*(?:\/>|>[\s\S]*?<\/a:pPr>)/);
+    const pPr = pPrM ? pPrM[0] : "";
+    const newPara = `<a:p>${pPr}<a:r>${rPr}<a:t>${escXml(newValue)}</a:t></a:r></a:p>`;
+    return sp.slice(0, firstParaStart) + newPara + sp.slice(firstParaEnd);
+  });
+}
+
+/** "2026-06-22" → "2026. 06. 22" */
+function formatDateDots(isoDate: string): string {
+  const m = isoDate.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return isoDate;
+  return `${m[1]}. ${m[2]}. ${m[3]}`;
 }
