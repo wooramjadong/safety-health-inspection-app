@@ -57,7 +57,7 @@ export default function ImportPage() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
-      alert(`임포트 완료: 지적사항 ${json.importedFindings}개 저장될`);
+      alert(`임포트 완료: 지적사항 ${json.importedFindings}개 저장되었습니다.`);
       router.push("/dashboard");
     } catch (e: any) {
       alert("오류: " + e.message);
@@ -101,7 +101,7 @@ export default function ImportPage() {
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b px-6 py-4 shadow-sm">
         <h1 className="text-xl font-bold text-gray-900">과거 점검파일 가져오기</h1>
-        <p className="text-sm text-gray-500 mt-0.5">이미 수행된 점검 파일을 업로드해 지적사항을 DB에 누적 저장합니다. 저장 전 어느 곳이다 확인/수정이 가능합니다.</p>
+        <p className="text-sm text-gray-500 mt-0.5">이미 수행된 점검 파일을 업로드해 지적사항을 DB에 누적 저장합니다. 저장 전에 내용을 확인·수정할 수 있습니다.</p>
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-8 space-y-6">
@@ -208,7 +208,7 @@ export default function ImportPage() {
 
         {(regularData || sapaData) && (
           <div className="flex justify-end gap-3">
-            <button onClick={() => router.push("/dashboard")} className="px-5 py-2 rounded-lg border text-sm font-medium hover:bg-gray-50">재소판으렌 과취소</button>
+            <button onClick={() => router.push("/dashboard")} className="px-5 py-2 rounded-lg border text-sm font-medium hover:bg-gray-50">대시보드로</button>
             <button onClick={handleConfirm} disabled={confirming}
               className="px-5 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50">
               {confirming ? "저장 중..." : "확인하고 DB에 저장"}
