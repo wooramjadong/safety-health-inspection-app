@@ -8,11 +8,11 @@
  *
  * 순서가 중요함: xlsx를 도워 생성해서 체크리스트 기본 점수(scores)를 자동으로 계산한
  * 다음, 그 값을 PPTX의 슬라이드2 점수표에 그대로 쓴다 — 이렇게 해야 둘 다의 총점/서류부문/
- * 현장부문 점수가 언제도 일썱한다.
+ * 현장부문 점수가 언제도 일치한다.
  *
  * 1) Sheets에서 점검 + 지적사항 조회
  * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상, 1회만 요약)
- * 3) xlsx 생성 (scores 회수) → PPTX 생성 (같은 findings.content + scores 장입, 주요작업 상세 3건도 동일하게 전달)
+ * 3) xlsx 생성 (scores 회수) → PPTX 생성 (같은 findings.content + scores 장입)
  * 4) Drive 업로드 → 현장 조치링크용 토큰 업데이트
  * 5) 다운로드 URL 반환
  */
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest) {
         siteName: insp.siteName,
         inspectionDate: insp.inspectionStart ?? "",
         inspectors: insp.inspectors ?? "",
-        overallResult: insp.overallResult ?? "미흡",
+        overallResult: (insp as any).overallResult ?? "미흡",
         findings: rawFindings.map((f: any, i: number) => ({
           seq: i + 1,
           itemName: f.itemName ?? "",
