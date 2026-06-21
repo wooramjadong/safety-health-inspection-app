@@ -9,7 +9,8 @@
  * 1) Sheets에서 점검 + 지적사항 조회
  * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상)
  * 3) 템플릿 PPTX/xlsx 다운로드 → 데이타 채움
- *    (xlsx 평가결과 시트의 총점/점수 수식은 체크리스트 입력에 따뛳 자동 계산되목로 직접 쓰지 않아)
+ *    (xlsx 평가결과 시트의 총점/점수 수식은 체크리스트 입력에 따라 자동 계산되목로 직접 쓰지 않아.
+ *    보정계수(O13)도 동일하게 하위 3건(P15/P16/P17)를 전도해 수식이 자동 계산하게 한다.)
  * 4) Drive 업로드 → 현장 조치링크용 토큰 업데이트
  * 5) 다운로드 URL 반환
  */
@@ -93,8 +94,6 @@ export async function POST(req: NextRequest) {
 
       // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 하고,
       // review 화맩에서 사용자가 확정한 matchOverrides는 그대로 적용.
-      // 주의: docTotalScore/docSectionScore/fieldSectionScore/deduction/correctionFactor는
-      // 평가결과 시트에서 수식(D13/F13/I13/L13/O13)으로 자동 계산되목로 더 이상 직접 전도하지 않음
       const xlsxTpl = await downloadFileAsBuffer(REGULAR_XLSX_ID);
       const xlsxBuf = await generateRegularXlsx(xlsxTpl, {
         siteName: insp.siteName,
@@ -104,6 +103,9 @@ export async function POST(req: NextRequest) {
         amount: insp.amount ?? "",
         constructionPeriod: insp.constructionPeriod ?? "",
         managerInfo: `${insp.siteManager ?? ""} ${insp.safetyManager ?? ""}`.trim(),
+        monthlyProgressFactor: insp.monthlyProgressFactor ?? "1",
+        riskWorkFactor: insp.riskWorkFactor ?? "1",
+        helperOperationFactor: insp.helperOperationFactor ?? "1",
         fieldFindings: findings.map((f, i) => ({
           content: f.content,
           grade: f.grade,

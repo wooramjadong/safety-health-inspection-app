@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 type Finding = {
   id: string;
   section: "서류" | "현장";
-  grade?: "위험" | "미흡"; // 현장부문만 사용 — 별첨 PPTX 구분 + xlsx 현장부문 등급에 매해됩
+  grade?: "위험" | "미흡";
   content: string;
   actionRequest: string;
 };
@@ -17,6 +17,24 @@ const INITIAL_FINDING = (): Finding => ({
   content: "",
   actionRequest: "",
 });
+
+// 템플릿 원반 닜롬다운 옵션 (xlsx 평가결과 시트 M15/M16/M17 닜롬다운 값 그대로)
+const MONTHLY_PROGRESS_OPTIONS = [
+  { label: "1~5%", value: "1" },
+  { label: "6~8%", value: "1.02" },
+  { label: "8~10%", value: "1.04" },
+  { label: "10%이상", value: "1.06" },
+];
+const RISK_WORK_OPTIONS = [
+  { label: "일반", value: "1" },
+  { label: "거푸집&동바리", value: "1.01" },
+  { label: "철골설젤", value: "1.02" },
+  { label: "T/C사용", value: "1.03" },
+];
+const HELPER_OPERATION_OPTIONS = [
+  { label: "1목이상 운영", value: "1" },
+  { label: "불운영", value: "1.02" },
+];
 
 export default function NewInspectionPage() {
   const router = useRouter();
@@ -35,6 +53,10 @@ export default function NewInspectionPage() {
   const [safetyManager, setSafetyManager] = useState("");
   const [docScore, setDocScore] = useState("");
   const [fieldScore, setFieldScore] = useState("");
+  // 보정계수 하위 3건 (xlsx P15/P16/P17 → O13=SUM(P15:P17)/3 자동 계산)
+  const [monthlyProgressFactor, setMonthlyProgressFactor] = useState("1");
+  const [riskWorkFactor, setRiskWorkFactor] = useState("1");
+  const [helperOperationFactor, setHelperOperationFactor] = useState("1");
 
   // 지적사항
   const [findings, setFindings] = useState<Finding[]>([INITIAL_FINDING()]);
@@ -49,7 +71,6 @@ export default function NewInspectionPage() {
     setFindings((prev) => [...prev, INITIAL_FINDING()]);
   }
 
-  /** 부문 변경 시: 서류는 등급 제거, 현장으로 바뀜 떀 괰레 등급 기본값(미흡) 촔웩 */
   function handleSectionChange(id: string, section: "서류" | "현장") {
     if (section === "서류") {
       updateFinding(id, { section, grade: undefined });
@@ -66,7 +87,6 @@ export default function NewInspectionPage() {
     }
     setSubmitting(true);
     try {
-      // 1. 점검 생성
       const inspRes = await fetch("/api/inspections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -74,12 +94,12 @@ export default function NewInspectionPage() {
           type, siteName, constructionPeriod, amount, progress,
           inspectionStart, inspectionEnd, inspectors,
           siteManager, safetyManager, docScore, fieldScore,
+          monthlyProgressFactor, riskWorkFactor, helperOperationFactor,
           status: "점검완료",
         }),
       });
       const { id: inspectionId } = await inspRes.json();
 
-      // 2. 지적사항 저장
       await Promise.all(
         findings.filter((f) => f.content.trim()).map((f) =>
           fetch("/api/findings", {
@@ -128,15 +148,26 @@ export default function NewInspectionPage() {
             <Field label="점검 종료일" type="date" value={inspectionEnd} onChange={setInspectionEnd} />
           </div>
           {type === "정기평가" && (
-            <div className="grid grid-cols-2 gap-4 pt-2">
-              <Field label="공사기간" value={constructionPeriod} onChange={setConstructionPeriod} />
-              <Field label="공사금액" value={amount} onChange={setAmount} />
-              <Field label="공정율(%)" value={progress} onChange={setProgress} />
-              <Field label="현장소장" value={siteManager} onChange={setSiteManager} />
-              <Field label="안전관리자" value={safetyManager} onChange={setSafetyManager} />
-              <Field label="서류부문 점수" value={docScore} onChange={setDocScore} />
-              <Field label="현장부문 점수" value={fieldScore} onChange={setFieldScore} />
-            </div>
+            <>
+              <div className="grid grid-cols-2 gap-4 pt-2">
+                <Field label="공사기간" value={constructionPeriod} onChange={setConstructionPeriod} />
+                <Field label="공사금액" value={amount} onChange={setAmount} />
+                <Field label="공정율(%)" value={progress} onChange={setProgress} />
+                <Field label="현장소장" value={siteManager} onChange={setSiteManager} />
+                <Field label="안전관리자" value={safetyManager} onChange={setSafetyManager} />
+                <Field label="서류부문 점수" value={docScore} onChange={setDocScore} />
+                <Field label="현장부문 점수" value={fieldScore} onChange={setFieldScore} />
+              </div>
+
+              <div className="pt-4 border-t">
+                <p className="text-sm font-medium text-gray-700 mb-3">보정계수 (3건 평그으로 자동 산정)</p>
+                <div className="grid grid-cols-3 gap-4">
+                  <SelectField label="월 공정률 보정" value={monthlyProgressFactor} onChange={setMonthlyProgressFactor} options={MONTHLY_PROGRESS_OPTIONS} />
+                  <SelectField label="주 위험공종 진행" value={riskWorkFactor} onChange={setRiskWorkFactor} options={RISK_WORK_OPTIONS} />
+                  <SelectField label="안전보조원 운영" value={helperOperationFactor} onChange={setHelperOperationFactor} options={HELPER_OPERATION_OPTIONS} />
+                </div>
+              </div>
+            </>
           )}
         </section>
 
@@ -168,8 +199,6 @@ export default function NewInspectionPage() {
                       <option value="서류">서류</option>
                     </select>
                   </div>
-                  {/* 서류부문 지적사항은 등급 구분이 없으목 — xlsx 서류부문 시트는 의견란(H열)에만 기록되고
-                      별도의 양호/미흡/위험 컬럼이 없음. 현장부문만 별첨 PPTX 구분 + xlsx 등급에 매해될 */}
                   {f.section === "현장" && (
                     <div>
                       <label className="text-xs text-gray-500 mb-1 block">등급</label>
@@ -226,6 +255,27 @@ function Field({
       <label className="text-xs text-gray-500 mb-1 block">{label}</label>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)}
         className="w-full border rounded px-3 py-2 text-sm" />
+    </div>
+  );
+}
+
+function SelectField({
+  label, value, onChange, options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: { label: string; value: string }[];
+}) {
+  return (
+    <div>
+      <label className="text-xs text-gray-500 mb-1 block">{label}</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="w-full border rounded px-2 py-1.5 text-sm">
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
     </div>
   );
 }
