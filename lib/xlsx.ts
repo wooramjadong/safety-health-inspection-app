@@ -1,21 +1,25 @@
 /**
  * 정기평가 xlsx 자동 생성 (JSZip 기반 XML 직접 조작)
  *
- * 중요: generateRegularXlsx는 이제 { buffer, scores } 를 반환한다. scores는 xlsx의
- * 수식(D13/F13/I13/O13)과 수학적으로 동일하게 JS로 계산된 값이고, PPTX 슬라이듌의
- * 점수표와 일썱시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점 까지 일쬔).
+ * 중요: generateRegularXlsx는 { buffer, scores } 를 반환한다. scores는 xlsx의
+ * 수식(D13/F13/I13/O13)과 수학적으로 동일하게 JS로 계산된 값이고, PPTX 슬라이드의
+ * 점수표와 일썱시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점까지 일썱).
  *
  * 점수 공식 (원본 수식을 그대로 분석해 재현):
- *   현장부문점수 = 50 - 주(도적됨 체크리스트 합의 감점 (행 단위, 중복 매징도 1번만 차감) — 미흡=-1, 위험=-2
+ *   현장부문점수 = 50 - 구 매징된 체크리스트 항목의 감점 합 (행 단위, 중복 매징도 1번만 차감) — 미흡=-1, 위험=-2
  *   서류부문점수 = 현장소장%/10 + 관리감독자%/5 + 안전관리자%/5
- *     (각 %는 100*해당역할 항목점수합/해당역할 총철점합, N/A 항목은 총철점에서도 제외)
  *   보정계수 = (월공정률보정+주위험공종진행+안전보조원운영)/3
- *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 입력 UI 없으뭴 항상 0)
+ *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 UI 없으목 항상 0)
+ *
+ * ⚠️ 현장부문 지적사항(G열)은 PPTX 별첨 슬라이드와 텍스트가 글자 하나까지 동일해야 하므로,
+ * 여러 지적사항이 같은 항목에 매징되어도 절대 추가로 축쇕하지 않고 줄바꿈만으로 합쇔다
+ * (원본 G열 스타일이 shrinkToFit이니다도 그래도 넘지면 Excel이 자주 구도롱다. 폰트는 다조지 않으르, 원본 템플릿의
+ * 기반 동작이다. 단 서류부문(H열)뚘 PPTX에 대응하는 항목이 없으몤롱 조그 계속 축쇕한다).
  *
  * 시트 구조 (제주삼다수 템플릿 기준):
  *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
  *      P15/P16/P17=보정계수 하위 3건. G21:G25=가감점(현재 UI 없이 0으로 리셋).
- *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(수식 셀). 하위 입력대로 자동 장사.
+ *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(수식 셀).
  *   2. "안전보건 서류부문" — 항목당 3개 등급티어. G{row}=항목점수, H{row}=의견. 만점=지적없음.
  *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항.
  *   4. "Sheet3" — 가감점 보정표 (고정값, 미사용).
@@ -320,7 +324,6 @@ export async function generateRegularXlsx(
     s1 = setCellNumber(s1, "P15", parseFloat(data.monthlyProgressFactor ?? "1") || 1);
     s1 = setCellNumber(s1, "P16", parseFloat(data.riskWorkFactor ?? "1") || 1);
     s1 = setCellNumber(s1, "P17", parseFloat(data.helperOperationFactor ?? "1") || 1);
-    // 가감점 입력 UI 없으목 항상 0으로 리셋 (L13=G26=SUM(G21:H25))
     for (const r of [21, 22, 23, 24, 25]) s1 = setCellNumber(s1, `G${r}`, 0);
   }
 
@@ -350,12 +353,12 @@ export async function generateRegularXlsx(
       const col = grade === "위험" ? "F" : "E";
       const val = grade === "위험" ? 2 : 1;
       s3 = setCellNumber(s3, `${col}${row}`, val);
-      const combined = await combineFindingTexts(texts, 60);
+      // 주의: PPTX 별첨 슬라이드와 텍스트를 글자 하나까지 일썱해야 하므로 추가 축쇕 절대 안 함 — 줄바꿈롱 합쇔
+      const combined = texts.join("\n");
       s3 = writeText(s3, `G${row}`, combined);
     }
   }
 
-  // 현장부문 점수: 50점 만점에서 행 단위 감점 (xlsx I13 = '안전보건 현장부문'!G166 수식과 동일 논리)
   let fieldDeduction = 0;
   for (const { grades } of fieldGroups.values()) {
     fieldDeduction += grades.includes("위험") ? 2 : 1;
@@ -393,6 +396,7 @@ export async function generateRegularXlsx(
       const { mid, notApplicable } = getDocItemTiers(s2, row);
       s2 = setCellNumber(s2, `G${row}`, notApplicable ? 0 : mid);
 
+      // 서류부문은 PPTX에 대응하는 항목이 없으몤롱 (xlsx 전용), 셀 용뇘 초과 시 Gemini 축쇕 계속 적용
       const combined = await combineFindingTexts(texts, DOC_OPINION_TOTAL_CHARS);
 
       const curStyleIdx = getCellStyleIndex(s2, `H${row}`);
@@ -405,7 +409,6 @@ export async function generateRegularXlsx(
       s2 = writeText(s2, `H${row}`, combined);
     }
 
-    // 서류부문 점수: 평가대상(현장소장/관리감독자/안전관리자)별 백분율 → 10/5/5 가중합 (xlsx F13과 동일 논리)
     for (const item of DOC_CHECKLIST) {
       const roleKey = Object.keys(roleGroups).find((k) => item.group.includes(k));
       if (!roleKey) continue;
@@ -424,7 +427,7 @@ export async function generateRegularXlsx(
       (parseFloat(data.riskWorkFactor ?? "1") || 1) +
       (parseFloat(data.helperOperationFactor ?? "1") || 1)) /
     3;
-  const deduction = 0; // 가감점 입력 UI 부재 — 우선 0으로 제로
+  const deduction = 0;
   const totalScore = (docScore + fieldScore) * correctionFactor + deduction;
 
   zip.file("xl/sharedStrings.xml", ssXml);
