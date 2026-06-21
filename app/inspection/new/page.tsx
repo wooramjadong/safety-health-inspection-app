@@ -18,7 +18,7 @@ const INITIAL_FINDING = (): Finding => ({
   actionRequest: "",
 });
 
-// 템플릿 원반 닜롬다운 옵션 (xlsx 평가결과 시트 M15/M16/M17 닜롬다운 값 그대로)
+// 템플릿 원본 드롭다운 옵션 (xlsx 평가결과 시트 P15/P16/P17 데이터유효성검사 값 그대로 — 임의값 입력 금지)
 const MONTHLY_PROGRESS_OPTIONS = [
   { label: "1~5%", value: "1" },
   { label: "6~8%", value: "1.02" },
@@ -28,12 +28,12 @@ const MONTHLY_PROGRESS_OPTIONS = [
 const RISK_WORK_OPTIONS = [
   { label: "일반", value: "1" },
   { label: "거푸집&동바리", value: "1.01" },
-  { label: "철골설젤", value: "1.02" },
+  { label: "철골설치", value: "1.02" },
   { label: "T/C사용", value: "1.03" },
 ];
 const HELPER_OPERATION_OPTIONS = [
-  { label: "1목이상 운영", value: "1" },
-  { label: "불운영", value: "1.02" },
+  { label: "1명이상 운영", value: "1" },
+  { label: "미운영", value: "1.02" },
 ];
 
 export default function NewInspectionPage() {
@@ -57,6 +57,10 @@ export default function NewInspectionPage() {
   const [monthlyProgressFactor, setMonthlyProgressFactor] = useState("1");
   const [riskWorkFactor, setRiskWorkFactor] = useState("1");
   const [helperOperationFactor, setHelperOperationFactor] = useState("1");
+  // 주요작업 상세 3건 (xlsx N7 + pptx 슬라이드2 표1[주요작업]에 동일하게 반영됨)
+  const [civilWorkDetail, setCivilWorkDetail] = useState("");
+  const [concreteWorkDetail, setConcreteWorkDetail] = useState("");
+  const [wetWorkDetail, setWetWorkDetail] = useState("");
 
   // 지적사항
   const [findings, setFindings] = useState<Finding[]>([INITIAL_FINDING()]);
@@ -95,6 +99,7 @@ export default function NewInspectionPage() {
           inspectionStart, inspectionEnd, inspectors,
           siteManager, safetyManager, docScore, fieldScore,
           monthlyProgressFactor, riskWorkFactor, helperOperationFactor,
+          civilWorkDetail, concreteWorkDetail, wetWorkDetail,
           status: "점검완료",
         }),
       });
@@ -160,11 +165,20 @@ export default function NewInspectionPage() {
               </div>
 
               <div className="pt-4 border-t">
-                <p className="text-sm font-medium text-gray-700 mb-3">보정계수 (3건 평그으로 자동 산정)</p>
+                <p className="text-sm font-medium text-gray-700 mb-3">보정계수 (3건 평균으로 자동 산정)</p>
                 <div className="grid grid-cols-3 gap-4">
                   <SelectField label="월 공정률 보정" value={monthlyProgressFactor} onChange={setMonthlyProgressFactor} options={MONTHLY_PROGRESS_OPTIONS} />
                   <SelectField label="주 위험공종 진행" value={riskWorkFactor} onChange={setRiskWorkFactor} options={RISK_WORK_OPTIONS} />
                   <SelectField label="안전보조원 운영" value={helperOperationFactor} onChange={setHelperOperationFactor} options={HELPER_OPERATION_OPTIONS} />
+                </div>
+              </div>
+
+              <div className="pt-4 border-t">
+                <p className="text-sm font-medium text-gray-700 mb-3">주요작업 (PPTX 슬라이드2 표와 xlsx에 동일하게 반영)</p>
+                <div className="grid grid-cols-1 gap-3">
+                  <Field label="토목공사 상세" value={civilWorkDetail} onChange={setCivilWorkDetail} />
+                  <Field label="철콘공사 상세" value={concreteWorkDetail} onChange={setConcreteWorkDetail} />
+                  <Field label="습식공사 상세" value={wetWorkDetail} onChange={setWetWorkDetail} />
                 </div>
               </div>
             </>
