@@ -2,13 +2,14 @@
  * POST /api/generate
  * body: { inspectionId: string, matchOverrides?: Record<string, number> }
  *
- * matchOverrides: { [findingId]: 체크리스트 row 번호 } — /inspection/[id]/review 화반에서
+ * matchOverrides: { [findingId]: 체크리스트 row 번호 } — /inspection/[id]/review 화맩에서
  * 사용자가 AI 매징을 사전 확인·수정한 경우 전도되어, 실제 생성 시에는 다시 AI
  * 호다하지 않고 사용자가 지정한 행을 그대로 쓴다.
  *
  * 1) Sheets에서 점검 + 지적사항 조회
  * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상)
- * 3) 템플릿 PPTX/xlsx 다운로드 → 데이타 채움 (PPTX/xlsx 지적사항 텍스트 100% 일썱)
+ * 3) 템플릿 PPTX/xlsx 다운로드 → 데이타 채움
+ *    (xlsx 평가결과 시트의 총점/점수 수식은 체크리스트 입력에 따뛳 자동 계산되목로 직접 쓰지 않아)
  * 4) Drive 업로드 → 현장 조치링크용 토큰 업데이트
  * 5) 다운로드 URL 반환
  */
@@ -90,10 +91,11 @@ export async function POST(req: NextRequest) {
       );
       pptxUrl = pptxResult.webViewLink;
 
-      // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 하며,
-      // review 화반에서 사용자가 확정한 matchOverrides는 그대로 적용
+      // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 하고,
+      // review 화맩에서 사용자가 확정한 matchOverrides는 그대로 적용.
+      // 주의: docTotalScore/docSectionScore/fieldSectionScore/deduction/correctionFactor는
+      // 평가결과 시트에서 수식(D13/F13/I13/L13/O13)으로 자동 계산되목로 더 이상 직접 전도하지 않음
       const xlsxTpl = await downloadFileAsBuffer(REGULAR_XLSX_ID);
-      const docScoreNum = parseFloat(insp.docScore ?? "0") || 0;
       const xlsxBuf = await generateRegularXlsx(xlsxTpl, {
         siteName: insp.siteName,
         inspectionPeriod: `${insp.inspectionStart} ~ ${insp.inspectionEnd}`,
@@ -102,11 +104,6 @@ export async function POST(req: NextRequest) {
         amount: insp.amount ?? "",
         constructionPeriod: insp.constructionPeriod ?? "",
         managerInfo: `${insp.siteManager ?? ""} ${insp.safetyManager ?? ""}`.trim(),
-        docTotalScore: insp.docScore ?? "0",
-        docSectionScore: String(docScoreNum / 2), // 100점→50점 환산 (구조상 가중식 주의)
-        fieldSectionScore: insp.fieldScore ?? "0",
-        deduction: insp.deduction ?? "0",
-        correctionFactor: insp.correctionFactor ?? "1",
         fieldFindings: findings.map((f, i) => ({
           content: f.content,
           grade: f.grade,
