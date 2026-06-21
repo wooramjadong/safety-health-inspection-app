@@ -6,15 +6,15 @@
  * 점수표와 일썱시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점까지 일썱).
  *
  * 점수 공식 (원본 수식을 그대로 분석해 재현):
- *   현장부문점수 = 50 - 구 매징된 체크리스트 항목의 감점 합 (행 단위, 중복 매징도 1번만 차감) — 미흡=-1, 위험=-2
+ *   현장부문점수 = 50 - 매칭된 체크리스트 항목의 감점 합 (행 단위, 중복 매칭도 1번만 차감) — 미흡=-1, 위험=-2
  *   서류부문점수 = 현장소장%/10 + 관리감독자%/5 + 안전관리자%/5
  *   보정계수 = (월공정률보정+주위험공종진행+안전보조원운영)/3
  *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 UI 없으목 항상 0)
  *
  * ⚠️ 현장부문 지적사항(G열)은 PPTX 별첨 슬라이드와 텍스트가 글자 하나까지 동일해야 하므로,
- * 여러 지적사항이 같은 항목에 매징되어도 절대 추가로 축쇕하지 않고 줄바꿈만으로 합쇔다
- * (원본 G열 스타일이 shrinkToFit이니다도 그래도 넘지면 Excel이 자주 구도롱다. 폰트는 다조지 않으르, 원본 템플릿의
- * 기반 동작이다. 단 서류부문(H열)뚘 PPTX에 대응하는 항목이 없으몤롱 조그 계속 축쇕한다).
+ * 여러 지적사항이 같은 항목에 매칭되어도 절대 추가로 축쇕하지 않고 줄바꿈만으로 합쇔다
+ * (원본 G열 스타일이 shrinkToFit이니 그래도 넘쇔이면 Excel이 자동 조정뗰. 퓰트는 구뙘했뎤쇔이며 원본 템플릿의
+ * 기반 동석이다. 단 서류부문(H열)은 PPTX에 대응하는 항목이 없으몤롱 초과 시 계속 축쇕한다).
  *
  * 시트 구조 (제주삼다수 템플릿 기준):
  *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
@@ -36,7 +36,12 @@ export type RegularXlsxInput = {
   siteName: string;
   inspectionPeriod: string;
   inspectors: string;
-  mainWork: string;
+  /** 구버전 호환용 — civilWorkDetail 도 3건이 없을 땔만 클백으로 사용 */
+  mainWork?: string;
+  /** 슬라이드2 표1과 동일한 주요작업 상세 — xlsx N7에는 욹장(토읅하조 근뎨 장입) 없이 상세만 결합해서 기롱
+  civilWorkDetail?: string;
+  concreteWorkDetail?: string;
+  wetWorkDetail?: string;
   amount: string;
   constructionPeriod: string;
   managerInfo: string;
@@ -47,12 +52,24 @@ export type RegularXlsxInput = {
   docFindings: DocFindingInput[];
 };
 
+export type RoleBreakdown = {
+  /** 평가대상도별 항목점수 백분율(0~100) */
+  siteManagerPct: number;
+  supervisorPct: number;
+  safetyManagerPct: number;
+  /** 환산점수 — 슬라이드3 표1과 동일 (현장소장 10점/관리감독자 20점/안전관리자 20점 만점 기준) */
+  siteManagerConverted: number;
+  supervisorConverted: number;
+  safetyManagerConverted: number;
+};
+
 export type ComputedScores = {
   totalScore: number;
   docScore: number;
   fieldScore: number;
   deduction: number;
   correctionFactor: number;
+  roleBreakdown: RoleBreakdown;
 };
 
 export type RegularXlsxResult = {
@@ -262,7 +279,7 @@ function setCellStyleIndex(sheetXml: string, ref: string, newStyleIdx: number): 
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-// ── 시트 이렬 → 파일 경로 매핵 ──────────────────────────────────
+// ── 시트 이렬 → 파일 경로 매핵 ───────────────────────────────────
 
 async function buildSheetPathMap(zip: JSZip): Promise<Record<string, string>> {
   const wbXml = await zip.file("xl/workbook.xml")!.async("string");
@@ -316,7 +333,11 @@ export async function generateRegularXlsx(
     s1 = writeText(s1, "B7", data.siteName);
     s1 = writeText(s1, "F7", data.inspectionPeriod);
     s1 = writeText(s1, "J7", data.inspectors);
-    s1 = writeText(s1, "N7", data.mainWork);
+    // N7(주요작업): 슬라이드2 표1과 동일 원처(상세 3건)를 욹장의 없이 결합 — 둘이 한으로 일썱하롱 보장
+    const workDetails = [data.civilWorkDetail, data.concreteWorkDetail, data.wetWorkDetail]
+      .filter((v): v is string => !!v && v.trim().length > 0);
+    const mainWorkCombined = workDetails.length > 0 ? workDetails.join(", ") : (data.mainWork ?? "");
+    s1 = writeText(s1, "N7", mainWorkCombined);
     const amountNum = parseFloat(String(data.amount).replace(/[^0-9.]/g, "")) || 0;
     s1 = setCellNumber(s1, "C9", amountNum);
     s1 = writeText(s1, "F9", data.constructionPeriod);
@@ -420,7 +441,16 @@ export async function generateRegularXlsx(
   }
 
   const pct = (k: string) => (roleGroups[k].denom > 0 ? (100 * roleGroups[k].g) / roleGroups[k].denom : 0);
-  const docScore = pct("현장소장") / 10 + pct("관리감독자") / 5 + pct("안전관리자") / 5;
+  const siteManagerPct = pct("현장소장");
+  const supervisorPct = pct("관리감독자");
+  const safetyManagerPct = pct("안전관리자");
+  const docScore = siteManagerPct / 10 + supervisorPct / 5 + safetyManagerPct / 5;
+  const roleBreakdown: RoleBreakdown = {
+    siteManagerPct, supervisorPct, safetyManagerPct,
+    siteManagerConverted: siteManagerPct / 10,
+    supervisorConverted: supervisorPct / 5,
+    safetyManagerConverted: safetyManagerPct / 5,
+  };
 
   const correctionFactor =
     ((parseFloat(data.monthlyProgressFactor ?? "1") || 1) +
@@ -446,5 +476,5 @@ export async function generateRegularXlsx(
   zip.file("xl/workbook.xml", wbXml);
 
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  return { buffer, scores: { totalScore, docScore, fieldScore, deduction, correctionFactor } };
+  return { buffer, scores: { totalScore, docScore, fieldScore, deduction, correctionFactor, roleBreakdown } };
 }
