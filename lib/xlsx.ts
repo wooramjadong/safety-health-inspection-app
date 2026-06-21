@@ -3,25 +3,25 @@
  *
  * 중요: generateRegularXlsx는 { buffer, scores } 를 반환한다. scores는 xlsx의
  * 수식(D13/F13/I13/O13)과 수학적으로 동일하게 JS로 계산된 값이고, PPTX 슬라이드의
- * 점수표와 일썱시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점까지 일썱).
+ * 점수표와 일치시키는 용도로 쓴다 (LibreOffice 재계산 검증 결과 소수점까지 일치).
  *
  * 점수 공식 (원본 수식을 그대로 분석해 재현):
  *   현장부문점수 = 50 - 매칭된 체크리스트 항목의 감점 합 (행 단위, 중복 매칭도 1번만 차감) — 미흡=-1, 위험=-2
  *   서류부문점수 = 현장소장%/10 + 관리감독자%/5 + 안전관리자%/5
  *   보정계수 = (월공정률보정+주위험공종진행+안전보조원운영)/3
- *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 UI 없으목 항상 0)
+ *   총점 = (서류부문점수+현장부문점수)*보정계수+가감점(현재 UI 없으면 항상 0)
  *
  * ⚠️ 현장부문 지적사항(G열)은 PPTX 별첨 슬라이드와 텍스트가 글자 하나까지 동일해야 하므로,
- * 여러 지적사항이 같은 항목에 매칭되어도 절대 추가로 축쇕하지 않고 줄바꿈만으로 합쇔다
- * (원본 G열 스타일이 shrinkToFit이니 그래도 넘쇔이면 Excel이 자동 조정뗰. 퓰트는 구뙘했뎤쇔이며 원본 템플릿의
- * 기반 동석이다. 단 서류부문(H열)은 PPTX에 대응하는 항목이 없으몤롱 초과 시 계속 축쇕한다).
+ * 여러 지적사항이 같은 항목에 매칭되어도 절대 추가로 축약하지 않고 줄바꿈만으로 합친다
+ * (원본 G열 스타일이 shrinkToFit이니 그래도 넘치면 Excel이 자동 조정한다. 폰트는 건드리지 않으며, 원본 템플릿의
+ * 기본 동작이다. 단 서류부문(H열)은 PPTX에 대응하는 항목이 없으므로 초과 시 계속 축약한다).
  *
  * 시트 구조 (제주삼다수 템플릿 기준):
  *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
  *      P15/P16/P17=보정계수 하위 3건. G21:G25=가감점(현재 UI 없이 0으로 리셋).
  *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(수식 셀).
  *   2. "안전보건 서류부문" — 항목당 3개 등급티어. G{row}=항목점수, H{row}=의견. 만점=지적없음.
- *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항.
+ *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발견사항.
  *   4. "Sheet3" — 가감점 보정표 (고정값, 미사용).
  */
 
@@ -36,9 +36,9 @@ export type RegularXlsxInput = {
   siteName: string;
   inspectionPeriod: string;
   inspectors: string;
-  /** 구버전 호환용 — civilWorkDetail 도 3건이 없을 땔만 클백으로 사용 */
+  /** 구버전 호환용 — civilWorkDetail 등 3건이 없을 때만 폴백으로 사용 */
   mainWork?: string;
-  /** 슬라이드2 표1과 동일한 주요작업 상세 — xlsx N7에는 욹장(토읅하조 근뎨 장입) 없이 상세만 결합해서 기롱
+  /** 슬라이드2 표1과 동일한 주요작업 상세 — xlsx N7에는 카테고리명(토목공사 등) 없이 상세만 결합해서 기록 */
   civilWorkDetail?: string;
   concreteWorkDetail?: string;
   wetWorkDetail?: string;
@@ -53,7 +53,7 @@ export type RegularXlsxInput = {
 };
 
 export type RoleBreakdown = {
-  /** 평가대상도별 항목점수 백분율(0~100) */
+  /** 평가대상별 항목점수 백분율(0~100) */
   siteManagerPct: number;
   supervisorPct: number;
   safetyManagerPct: number;
@@ -279,7 +279,7 @@ function setCellStyleIndex(sheetXml: string, ref: string, newStyleIdx: number): 
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-// ── 시트 이렬 → 파일 경로 매핵 ───────────────────────────────────
+// ── 시트 이름 → 파일 경로 매핑 ──────────────────────────────────
 
 async function buildSheetPathMap(zip: JSZip): Promise<Record<string, string>> {
   const wbXml = await zip.file("xl/workbook.xml")!.async("string");
@@ -333,7 +333,7 @@ export async function generateRegularXlsx(
     s1 = writeText(s1, "B7", data.siteName);
     s1 = writeText(s1, "F7", data.inspectionPeriod);
     s1 = writeText(s1, "J7", data.inspectors);
-    // N7(주요작업): 슬라이드2 표1과 동일 원처(상세 3건)를 욹장의 없이 결합 — 둘이 한으로 일썱하롱 보장
+    // N7(주요작업): 슬라이드2 표1과 동일 출처(상세 3건)를 카테고리명 없이 결합 — 둘이 항상 일치하도록 보장
     const workDetails = [data.civilWorkDetail, data.concreteWorkDetail, data.wetWorkDetail]
       .filter((v): v is string => !!v && v.trim().length > 0);
     const mainWorkCombined = workDetails.length > 0 ? workDetails.join(", ") : (data.mainWork ?? "");
@@ -374,7 +374,7 @@ export async function generateRegularXlsx(
       const col = grade === "위험" ? "F" : "E";
       const val = grade === "위험" ? 2 : 1;
       s3 = setCellNumber(s3, `${col}${row}`, val);
-      // 주의: PPTX 별첨 슬라이드와 텍스트를 글자 하나까지 일썱해야 하므로 추가 축쇕 절대 안 함 — 줄바꿈롱 합쇔
+      // 주의: PPTX 별첨 슬라이드와 텍스트를 글자 하나까지 일치해야 하므로 추가 축약 절대 안 함 — 줄바꿈만 합침
       const combined = texts.join("\n");
       s3 = writeText(s3, `G${row}`, combined);
     }
@@ -417,7 +417,7 @@ export async function generateRegularXlsx(
       const { mid, notApplicable } = getDocItemTiers(s2, row);
       s2 = setCellNumber(s2, `G${row}`, notApplicable ? 0 : mid);
 
-      // 서류부문은 PPTX에 대응하는 항목이 없으몤롱 (xlsx 전용), 셀 용뇘 초과 시 Gemini 축쇕 계속 적용
+      // 서류부문은 PPTX에 대응하는 항목이 없으므로 (xlsx 전용), 셀 용량 초과 시 Gemini 축약 계속 적용
       const combined = await combineFindingTexts(texts, DOC_OPINION_TOTAL_CHARS);
 
       const curStyleIdx = getCellStyleIndex(s2, `H${row}`);
