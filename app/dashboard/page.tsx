@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 type Inspection = {
   id: string;
@@ -14,9 +15,9 @@ type Inspection = {
 };
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [inspections, setInspections] = useState<Inspection[]>([]);
   const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/inspections")
@@ -25,8 +26,16 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  async function handleGenerate(id: string) {
-    setGenerating(id);
+  function goToReview(id: string, type: string) {
+    if (type === "정기평가") {
+      router.push(`/inspection/${id}/review`);
+    } else {
+      // 준수평가는 체크리스트 매징이 없으목 고댁 바로 생성
+      handleDirectGenerate(id);
+    }
+  }
+
+  async function handleDirectGenerate(id: string) {
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -36,13 +45,10 @@ export default function DashboardPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       alert(`생성 완료\nPPTX: ${data.pptxUrl}\n조치링크: ${data.actionLink}`);
-      // 목록 새로고침
       const updated = await fetch("/api/inspections").then((r) => r.json());
       setInspections(updated);
     } catch (e: any) {
       alert("오류: " + e.message);
-    } finally {
-      setGenerating(null);
     }
   }
 
@@ -128,23 +134,14 @@ export default function DashboardPage() {
                       ) : <span className="text-gray-400">미생성</span>}
                     </td>
                     <td className="px-4 py-3">
-                      {!insp.pptxUrl ? (
-                        <button
-                          onClick={() => handleGenerate(insp.id)}
-                          disabled={generating === insp.id}
-                          className="bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
-                        >
-                          {generating === insp.id ? "생성중..." : "생성"}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleGenerate(insp.id)}
-                          disabled={generating === insp.id}
-                          className="text-gray-500 text-xs px-3 py-1 rounded border hover:bg-gray-50 disabled:opacity-50"
-                        >
-                          재생성
-                        </button>
-                      )}
+                      <button
+                        onClick={() => goToReview(insp.id, insp.type)}
+                        className={insp.pptxUrl
+                          ? "text-gray-500 text-xs px-3 py-1 rounded border hover:bg-gray-50"
+                          : "bg-blue-600 text-white text-xs px-3 py-1 rounded hover:bg-blue-700"}
+                      >
+                        {insp.pptxUrl ? "재생성" : "생성"}
+                      </button>
                     </td>
                   </tr>
                 ))}
