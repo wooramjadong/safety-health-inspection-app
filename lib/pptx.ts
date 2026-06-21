@@ -3,12 +3,22 @@
  * 접근 방식: JSZip으로 PPTX(ZIP)을 열고, XML을 문자열 조작
  *
  * slide1(표지) 구조:
- *   • 표(table): "점검 현장"/"점검 기간"/"점검 인원"/"안전관계자"가 한 행에 [라벨,값] → replaceAdjacentCell
+ *   • 표(table): "점검 현장"/"점검 기간"/"점검 인원"/"안전관계자"가 한 행에 [라볘,값] → replaceAdjacentCell
  *   • 별도 텍스트박스 2건: "[현장명 현장]" 제목, "YYYY. MM. DD" 날짜(점검종료일) → replaceWholeTextBox
  * slide2(결과요약) 구조:
- *   • "현장명"/"공사기간" 등은 다음 행의 같은 열 위치에 값이 있으므로 → replaceCellBelow
+ *   • "현장명"/"공사기간" 등은 다음 행의 같은 열 위좌에 값이 있으이 replaceCellBelow
  *   • 점수표(테이블2): row2 = [이름표, 총점값, 서류부문, 현장부문, 가감점, 보정계수]
  *     — xlsx에서 계산한 scores를 그대로 쓴다 (route.ts에서 전달해야 동일함이 보장됨)
+ *   • 주요작업(테이블1): row1~3 col1 = [토목쇁사,철콘쇁사,습식쇁사] 상세 — xlsx N7과 동일 원처
+ *
+ * slide3(서류부문) 구조:
+ *   • 표0: row1=현장소장(col2=pct), row2=관리감독자(rowSpan4,col2=pct), row6=안전관리자(rowSpan5,col2=pct)
+ *   • 표1: row1~3 col1 = 환산점수 (현장소장 10점/관리감독자 20점/안전관리자 20점 만점 기준)
+ *   • 지적 텍스트(표0 col1)는 원본 유지 — 서류부문 지적사항은 xlsx 전용으로 확정되어 PPTX에는 대응 항목 없음
+ *
+ * slide4(현장부문) 구조:
+ *   • 표0: row1~12 = [위험유형,확인사항,감점] — findings로 재작성, 뛷 손 트롱 초과한다
+ *   • 표1: row1=미흡 건수, row2=위험 건수
  *
  * 별첨 슬라이드 구조 (정기평가 별첨):
  *   테이블0 [구분]: row1=구분, row2=위험|미흡
@@ -69,6 +79,11 @@ function findNthTag(
 }
 
 function rebuildCellText(cellXml: string, newText: string): string {
+  // 원본 <a:tc> 여는태그의 속성(rowSpan/gridSpan/vMerge/hMerge 등)을 반돜시 보존해야
+  // 병합된 셀(예: 슬라이드3 표0의 관리감독자/안전관리자 rowSpan 바롨) 구조가 깨지지 않는다.
+  const openTagM = cellXml.match(/^<a:tc([^>]*)>/);
+  const tcOpenAttrs = openTagM ? openTagM[1] : "";
+
   const tcPrM = cellXml.match(/(<a:tcPr[\s\S]*?<\/a:tcPr>|<a:tcPr[^>]*\/>)/);
   const tcPr = tcPrM ? tcPrM[0] : "";
 
@@ -91,7 +106,7 @@ function rebuildCellText(cellXml: string, newText: string): string {
 
   const run = newText ? `<a:r>${rPr}<a:t>${escXml(newText)}</a:t></a:r>` : "";
   const txBody = `<a:txBody>${bodyPr}${lstStyle}<a:p>${pPr}${run}</a:p></a:txBody>`;
-  return `<a:tc>${txBody}${tcPr}</a:tc>`;
+  return `<a:tc${tcOpenAttrs}>${txBody}${tcPr}</a:tc>`;
 }
 
 function setCell(
@@ -191,7 +206,7 @@ function addSlideToContentTypes(ctXml: string, slideNum: number): string {
   );
 }
 
-// ── 별첨 슬라이드 데이터 입력 ───────────────────────────────────
+// ── 별첨 슬라이드 데이타 입력 ───────────────────────────────────
 
 export type Finding = {
   seq: number;
@@ -216,12 +231,46 @@ function fillBulletinSlide(slideXml: string, f: Finding): string {
   return xml;
 }
 
+/** 슬라이드4 표0(위험유형별 감점)에 findings를 채우고, 표1(확인건수)에 미흡/위험 건수를 채운다 */
+function fillFieldSummarySlide(slideXml: string, findings: Finding[]): string {
+  let xml = slideXml;
+  const MAX_ROWS = 12; // 템플릿 표0의 데이타 행 수(행1~행12)
+  for (let i = 0; i < MAX_ROWS; i++) {
+    const rowN = i + 1;
+    if (i < findings.length) {
+      const f = findings[i];
+      xml = setCell(xml, 0, rowN, 0, f.riskType);
+      xml = setCell(xml, 0, rowN, 1, f.content);
+      xml = setCell(xml, 0, rowN, 2, f.grade === "위험" ? "2" : "1");
+    } else {
+      xml = setCell(xml, 0, rowN, 0, "");
+      xml = setCell(xml, 0, rowN, 1, "");
+      xml = setCell(xml, 0, rowN, 2, "");
+    }
+  }
+  const mihupCount = findings.filter(f => f.grade === "미흡").length;
+  const riskCount = findings.filter(f => f.grade === "위험").length;
+  xml = setCell(xml, 1, 1, 1, String(mihupCount));
+  xml = setCell(xml, 1, 2, 1, String(riskCount));
+  return xml;
+}
+
+export type RoleBreakdown = {
+  siteManagerPct: number;
+  supervisorPct: number;
+  safetyManagerPct: number;
+  siteManagerConverted: number;
+  supervisorConverted: number;
+  safetyManagerConverted: number;
+};
+
 export type RegularScores = {
   totalScore: number;
   docScore: number;
   fieldScore: number;
   deduction: number;
   correctionFactor: number;
+  roleBreakdown: RoleBreakdown;
 };
 
 // ── PUBLIC: 정기평가 PPTX 생성 ──────────────────────────────────────
@@ -231,7 +280,12 @@ export type RegularPptxInput = {
   constructionPeriod: string;
   amount: string;
   progress: string;
-  mainWork: string;
+  /** 구버전 호환용 클백 — civilWorkDetail 도 3건이 없을 땔만 사용 */
+  mainWork?: string;
+  /** 슬라이드2 표1[주요작업] 각 욹장보 상세 — xlsx N7과 동일 원처여야 함 */
+  civilWorkDetail?: string;
+  concreteWorkDetail?: string;
+  wetWorkDetail?: string;
   inspectionStart: string;
   inspectionEnd: string;
   inspectors: string;
@@ -256,7 +310,7 @@ export async function generateRegularPptx(
   );
   const totalSlides = slideFiles.length;
 
-  // slide1(표지): 표 안 라벨과 값이 같은 행에 있으므로 replaceAdjacentCell 사용
+  // slide1(표지): 표 안 라볘과 값이 같은 행에 있으이 replaceAdjacentCell 사용
   let s1 = await zip.file("ppt/slides/slide1.xml")!.async("string");
   s1 = replaceAdjacentCell(s1, "점검 현장", `${data.siteName}`);
   s1 = replaceAdjacentCell(s1, "점검 기간", `${data.inspectionStart} ~ ${data.inspectionEnd}`);
@@ -274,8 +328,8 @@ export async function generateRegularPptx(
   }, formatDateDots(data.inspectionEnd));
   zip.file("ppt/slides/slide1.xml", s1);
 
-  // slide2(결과요약): "현장명"/"공사기간" 등은 다음 행의 같은 열 위치에 값이 있으므로 replaceCellBelow 사용
-  // 주의: 원본 템플릿 라벨 사이 공백은 전각공백(U+3000)이지만, 일반 스페이스도 정상 동작한다 —
+  // slide2(결과요약): "현장명"/"공사기간" 등은 다음 행의 같은 열 위좌에 값이 있으이 replaceCellBelow 사용
+  // 주의: 원본 템플릿 라볘 사이 공백은 전속항 공백(U+3000)이지만, 일반 스프이스는 정상 동작한다 —
   // label 매칭 시 \s+ 제거 후 비교하므로, 인코딩 손상으로 단일 화이트스페이스로 \s에 매핑되지 않고
   // 조용히 no-op 됐던 과거 버그(U+FF00 깨진 문자) 재발 방지를 위해 일반 스페이스로 명시.
   let s2 = await zip.file("ppt/slides/slide2.xml")!.async("string");
@@ -289,9 +343,28 @@ export async function generateRegularPptx(
   s2 = setCell(s2, 2, 2, 3, data.scores.fieldScore.toFixed(1));
   s2 = setCell(s2, 2, 2, 4, String(data.scores.deduction));
   s2 = setCell(s2, 2, 2, 5, data.scores.correctionFactor.toFixed(2));
+  // 주요작업(테이블1): row1~3 col1 = [토목공사,철콘공사,습식공사] 상세 — xlsx N7과 동일 원처
+  if (data.civilWorkDetail) s2 = setCell(s2, 1, 1, 1, data.civilWorkDetail);
+  if (data.concreteWorkDetail) s2 = setCell(s2, 1, 2, 1, data.concreteWorkDetail);
+  if (data.wetWorkDetail) s2 = setCell(s2, 1, 3, 1, data.wetWorkDetail);
   zip.file("ppt/slides/slide2.xml", s2);
 
-  // slide3(서류부문 지적사항 표)는 다중 행 병합 구조가 복잡해 이번 수정에서는 점수/내용 자동 쓰지 않음 (원본 유지)
+  // slide3: 서류부문 평가대상발 점수 — xlsx에서 계산한 동일 값을 그대로 기롱 (지적 텍스트롱 원본 유지,
+  // 서류부문 지적사항은 xlsx 전용이롱 PPTX에롱 표기하지 않이기롱 확정롨)
+  let s3doc = await zip.file("ppt/slides/slide3.xml")!.async("string");
+  const rb = data.scores.roleBreakdown;
+  s3doc = setCell(s3doc, 0, 1, 2, rb.siteManagerPct.toFixed(2));
+  s3doc = setCell(s3doc, 0, 2, 2, rb.supervisorPct.toFixed(2));
+  s3doc = setCell(s3doc, 0, 6, 2, rb.safetyManagerPct.toFixed(2));
+  s3doc = setCell(s3doc, 1, 1, 1, `${rb.siteManagerConverted.toFixed(1)} (10점 만점 기준)`);
+  s3doc = setCell(s3doc, 1, 2, 1, `${rb.supervisorConverted.toFixed(1)} (20점 만점 기준)`);
+  s3doc = setCell(s3doc, 1, 3, 1, `${rb.safetyManagerConverted.toFixed(1)} (20점 만점 기준)`);
+  zip.file("ppt/slides/slide3.xml", s3doc);
+
+  // slide4: 현장부문 위험유형별 감점 + 확인건수 — 실제 findings롱 재작성
+  let s4 = await zip.file("ppt/slides/slide4.xml")!.async("string");
+  s4 = fillFieldSummarySlide(s4, data.findings);
+  zip.file("ppt/slides/slide4.xml", s4);
 
   const templateSlideXml = await zip.file("ppt/slides/slide5.xml")!.async("string");
   const templateRels = await zip.file("ppt/slides/_rels/slide5.xml.rels")!.async("string");
@@ -392,7 +465,7 @@ export async function generateSapaPptx(
 
 // ── 텍스트 교체 보조함수 ──────────────────────────────────────────
 
-/** 라벨이 있는 셀의 바로 다음 셀(같은 행)의 값을 교체 */
+/** 라볘이 있는 셀의 바로 다음 셀(같은 행)의 값을 교체 */
 function replaceAdjacentCell(slideXml: string, label: string, newValue: string): string {
   const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
   return slideXml.replace(tblRegex, (tbl) => {
@@ -429,7 +502,7 @@ function replaceAdjacentCell(slideXml: string, label: string, newValue: string):
 }
 
 /**
- * 라벨이 있는 행(row N)의 같은 열 위치(col)에, 다음 행(row N+1)의 값을 교체한다.
+ * 라볘이 있는 행(row N)의 같은 열 위좌(col)에, 다음 행(row N+1)의 값을 교체한다.
  */
 function replaceCellBelow(slideXml: string, label: string, newValue: string): string {
   const tblRegex = /<a:tbl>[\s\S]*?<\/a:tbl>/g;
