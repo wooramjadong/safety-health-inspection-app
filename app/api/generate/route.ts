@@ -12,7 +12,7 @@
  *
  * 1) Sheets에서 점검 + 지적사항 조회
  * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상, 1회만 요약)
- * 3) xlsx 생성 (scores 회수) → PPTX 생성 (같은 findings.content + scores 장입)
+ * 3) xlsx 생성 (scores 회수) → PPTX 생성 (같은 findings.content + scores 장입, 주요작업 상세 3건도 동일하게 전달)
  * 4) Drive 업로드 → 현장 조치링크용 토큰 업데이트
  * 5) 다운로드 URL 반환
  */
@@ -77,7 +77,9 @@ export async function POST(req: NextRequest) {
         siteName: insp.siteName,
         inspectionPeriod: `${insp.inspectionStart} ~ ${insp.inspectionEnd}`,
         inspectors: insp.inspectors ?? "",
-        mainWork: insp.mainWork ?? "",
+        civilWorkDetail: insp.civilWorkDetail ?? "",
+        concreteWorkDetail: insp.concreteWorkDetail ?? "",
+        wetWorkDetail: insp.wetWorkDetail ?? "",
         amount: insp.amount ?? "",
         constructionPeriod: insp.constructionPeriod ?? "",
         managerInfo: `${insp.siteManager ?? ""} ${insp.safetyManager ?? ""}`.trim(),
@@ -109,7 +111,9 @@ export async function POST(req: NextRequest) {
         constructionPeriod: insp.constructionPeriod ?? "",
         amount: insp.amount ?? "",
         progress: insp.progress ?? "",
-        mainWork: insp.mainWork ?? "",
+        civilWorkDetail: insp.civilWorkDetail ?? "",
+        concreteWorkDetail: insp.concreteWorkDetail ?? "",
+        wetWorkDetail: insp.wetWorkDetail ?? "",
         inspectionStart: insp.inspectionStart ?? "",
         inspectionEnd: insp.inspectionEnd ?? "",
         inspectors: insp.inspectors ?? "",
