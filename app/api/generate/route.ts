@@ -1,6 +1,10 @@
 /**
  * POST /api/generate
- * body: { inspectionId: string }
+ * body: { inspectionId: string, matchOverrides?: Record<string, number> }
+ *
+ * matchOverrides: { [findingId]: 체크리스트 row 번호 } — /inspection/[id]/review 화반에서
+ * 사용자가 AI 매징을 사전 확인·수정한 경우 전도되어, 실제 생성 시에는 다시 AI
+ * 호다하지 않고 사용자가 지정한 행을 그대로 쓴다.
  *
  * 1) Sheets에서 점검 + 지적사항 조회
  * 2) Gemini로 텍스트 요약 (현장부문 지적사항만 → 별첨 슬라이드 대상)
@@ -27,8 +31,9 @@ const RESULT_FOLDER  = process.env.DRIVE_RESULT_FOLDER_ID!;
 
 export async function POST(req: NextRequest) {
   try {
-    const { inspectionId } = await req.json();
+    const { inspectionId, matchOverrides } = await req.json();
     if (!inspectionId) return NextResponse.json({ error: "inspectionId required" }, { status: 400 });
+    const overrides: Record<string, number> = matchOverrides ?? {};
 
     // 1. 데이타 조회
     const allInspections = await getInspections();
@@ -85,7 +90,8 @@ export async function POST(req: NextRequest) {
       );
       pptxUrl = pptxResult.webViewLink;
 
-      // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 함
+      // xlsx — findings(이미 요약된 텍스트)를 재사용해 PPTX와 100% 동일한 내용이 들어가게 하며,
+      // review 화반에서 사용자가 확정한 matchOverrides는 그대로 적용
       const xlsxTpl = await downloadFileAsBuffer(REGULAR_XLSX_ID);
       const docScoreNum = parseFloat(insp.docScore ?? "0") || 0;
       const xlsxBuf = await generateRegularXlsx(xlsxTpl, {
@@ -101,8 +107,15 @@ export async function POST(req: NextRequest) {
         fieldSectionScore: insp.fieldScore ?? "0",
         deduction: insp.deduction ?? "0",
         correctionFactor: insp.correctionFactor ?? "1",
-        fieldFindings: findings.map(f => ({ content: f.content, grade: f.grade })),
-        docFindings: docRawFindings.map((f: any) => ({ content: f.content })),
+        fieldFindings: findings.map((f, i) => ({
+          content: f.content,
+          grade: f.grade,
+          matchedRow: overrides[fieldRawFindings[i]?.id],
+        })),
+        docFindings: docRawFindings.map((f: any) => ({
+          content: f.content,
+          matchedRow: overrides[f.id],
+        })),
       });
       const xlsxResult = await uploadToDrive(
         `${baseName}_정기평가.xlsx`,

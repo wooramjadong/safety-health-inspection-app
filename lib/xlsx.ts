@@ -11,14 +11,16 @@
  *
  * 지적사항 텍스트는 PPTX 별첨 슬라이드와 100% 동일해야 함 — Gemini가 가장 유사한
  * 체크리스트 항목을 찾아 해당 행에 등곁/내용을 기록한다 (matchChecklistRow).
+ * 다만 사용자가 리뷰 화반에서 이뺸 매징 행을 확인/수정한 경우는 matchedRow를 전도 받아
+ * AI 매징을 스킵하고 직접 해당 행을 사용한다.
  */
 
 import JSZip from "jszip";
 import { FIELD_CHECKLIST, DOC_CHECKLIST } from "./checklist-data";
 import { matchChecklistRow } from "./gemini";
 
-export type FieldFindingInput = { content: string; grade: "위험" | "미흡" };
-export type DocFindingInput = { content: string };
+export type FieldFindingInput = { content: string; grade: "위험" | "미흡"; matchedRow?: number };
+export type DocFindingInput = { content: string; matchedRow?: number };
 
 export type RegularXlsxInput = {
   siteName: string;
@@ -181,12 +183,12 @@ export async function generateRegularXlsx(
     zip.file(s1Path, s1);
   }
 
-  // ── 2. 안전보건 현장부문 시트 — AI 매징 후 등걡/내용 기록 ──
+  // ── 2. 안전보건 현장부문 시트 — 매징(자동 또는 사용자 확정) 후 등곁/내용 기록 ──
   const s3Path = sheetPath["안전보건 현장부문"];
   if (s3Path && zip.file(s3Path)) {
     let s3 = await zip.file(s3Path)!.async("string");
     for (const f of data.fieldFindings) {
-      const row = await matchChecklistRow(f.content, FIELD_CHECKLIST);
+      const row = f.matchedRow ?? (await matchChecklistRow(f.content, FIELD_CHECKLIST));
       if (!row) continue;
       const col = f.grade === "위험" ? "F" : "E";
       const val = f.grade === "위험" ? 2 : 1;
@@ -196,12 +198,12 @@ export async function generateRegularXlsx(
     zip.file(s3Path, s3);
   }
 
-  // ── 3. 안전보건 서류부문 시트 — AI 매징 후 의견란 기록 ──
+  // ── 3. 안전보건 서류부문 시트 — 매징(자동 또는 사용자 확정) 후 의견란 기록 ──
   const s2Path = sheetPath["안전보건 서류부문"];
   if (s2Path && zip.file(s2Path)) {
     let s2 = await zip.file(s2Path)!.async("string");
     for (const f of data.docFindings) {
-      const row = await matchChecklistRow(f.content, DOC_CHECKLIST);
+      const row = f.matchedRow ?? (await matchChecklistRow(f.content, DOC_CHECKLIST));
       if (!row) continue;
       s2 = writeText(s2, `H${row}`, f.content);
     }
