@@ -30,7 +30,7 @@ export default function DashboardPage() {
     if (type === "정기평가") {
       router.push(`/inspection/${id}/review`);
     } else {
-      // 준수평가는 체크리스트 매징이 없으목 고댁 바로 생성
+      // 준수평가는 체크리스트 매징이 없으뫀로 바로 생성
       handleDirectGenerate(id);
     }
   }
@@ -63,6 +63,7 @@ export default function DashboardPage() {
       "생성완료": "bg-green-100 text-green-800",
       "조치중": "bg-yellow-100 text-yellow-800",
       "조치완료": "bg-gray-100 text-gray-700",
+      "과거점검(임포트)": "bg-purple-100 text-purple-700",
     };
     return map[s] ?? "bg-gray-100 text-gray-700";
   };
@@ -72,12 +73,20 @@ export default function DashboardPage() {
       {/* Header */}
       <header className="bg-white border-b px-6 py-4 flex items-center justify-between shadow-sm">
         <h1 className="text-xl font-bold text-gray-900">안전보건 점검 관리</h1>
-        <Link
-          href="/inspection/new"
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
-        >
-          + 점검 등록
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href="/import"
+            className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 transition"
+          >
+            과거파일 가져오기
+          </Link>
+          <Link
+            href="/inspection/new"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+          >
+            + 점검 등록
+          </Link>
+        </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8">
