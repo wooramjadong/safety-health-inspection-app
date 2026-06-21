@@ -3,24 +3,26 @@
  *
  * 시트 구조 (제주삼다수 템플릿 기준):
  *   1. "평가 결과" — B7=현장명 F7=점검기간 J7=점검자 N7=주요작업, C9=공사금액 F9=공사기간 J9=담당자.
+ *      P15/P16/P17=보정계수 하위 3건(월공정률보정/주위험공종진행/안전보조원운영). O13=SUM(P15:P17)/3가 자동 계산.
  *      D13/F13/I13/L13/O13은 절대 직접 쓰지 않아야 함(전탠 수식 셀). 하위 체크리스트가 채워지막 자동 장사.
  *   2. "안전보건 서류부문" — 항목당 3개 등급티어(E{row},E{row+1},E{row+2}=0/중/만점). G{row}=항목점수, H{row}=의견.
  *      G6/G50/G87=소계 합산, H6/H50/H87=백분율(평가결과!P21~23로 전도). 만점=지적없음, 감점=의견필수.
- *      H열은 감제 좌 좌우원의 도니(20.33), 3행 병합(65.7pt), 9pt. 다수 지적사항이 한 항목에 모여리면
- *      \n로 줄을 나눠 wrapText로 표시하고, 총자가 수가 츠첨(45자) 넘으도니 Gemini로 축쇕한다 (폰트 크기는 변경 안 함).
- *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항 (이롱 shrinkToFit 원본 스타일 유지).
+ *      H열은 열너바 20.33, 3행 병합(65.7pt), 9pt. 다수 지적사항이 한 항목에 모이여면
+ *      \n로 줄을 나눠 wrapText로 표시하고, 총 글자수가 한도(45자)를 넘으도니 Gemini로 축쇕한다 (폰트 크기는 변경 안 함).
+ *   3. "안전보건 현장부문" — 체크리스트 158항목. E미흡=1/F위험=2, G{row}=발건사항 (원도 shrinkToFit 원본 스타일 유지).
  *   4. "Sheet3" — 가감점 보정표 (고정값, 미사용).
  *
  * ⚠️ 원본 템플릿은 이미 수행된 실제 점검 결과를 그대로 지니고 있어서, 새 점검 생성 시에는 체크리스트
  * 전항목을 만점/지적없음 기본값으로 적재리셋한 후, 매징된 항목만 감점/내용을 기록한다.
  *
- * 주의(3가지 핵시 수정):
+ * 주의(핵시 수정 4개):
  * 1) 소계/총점의 수식 셀(G6,H6,P21,F13,D13 등)은 캠시된 <v> 값이 업댌이트되지
- *    않을 수 있어, 열 래 잡에 반영안다일 수 있다 → 모든 수식 셀 캠시를 제거해 강제 장제(stripFormulaCache).
+ *    않을 수 있어 열 래 잡에 반영안다일 수 있다 → 모든 수식 셀 캠시를 제거해 강제 장제(stripFormulaCache).
  * 2) 서류부문의 H6/H50/H87 원본 수식은 엑셀 전용 "SUM((A1,A2,...))" 유니울 문법이른데, 구귀시트
  *    파서가 읽지 모해 #ERROR가 난다 → SUM(A1,A2,...) 호환 문법으로 자동 변환(fixGoogleSheetsCompat).
  * 3) 다수 지적사항이 같은 체크리스트 항목에 매징되어도 쓰지 않고 합쳐서 쓴다(combineFindingTexts).
  *    서류부문 H열은 추가돔띴 wrapText 스타일을 부여해 줄바꿈이 동작하게 한다(ensureWrapTextStyle).
+ * 4) 보정계수(O13)는 직접 입력이 아니다 — P15/P16/P17 세 건을 입력하여 수식이 자동으로 평교을 계산한다.
  */
 
 import JSZip from "jszip";
@@ -38,6 +40,10 @@ export type RegularXlsxInput = {
   amount: string;
   constructionPeriod: string;
   managerInfo: string;
+  /** 보정계수 하위 3건 (xlsx P15/P16/P17). 입력 없으면 기본값 "1"(보정 없음) */
+  monthlyProgressFactor?: string;
+  riskWorkFactor?: string;
+  helperOperationFactor?: string;
   fieldFindings: FieldFindingInput[];
   docFindings: DocFindingInput[];
 };
@@ -95,7 +101,6 @@ function getCellRaw(sheetXml: string, ref: string): { attrs: string; inner: stri
   return m ? { attrs: m[1] || "", inner: m[2] || "" } : null;
 }
 
-/** 셀의 캐시/원시 <v> 값을 숫자로 읽어온다. 없거나 N/A면 null */
 function readNumericCellValue(sheetXml: string, ref: string): number | null {
   const c = getCellRaw(sheetXml, ref);
   if (!c) return null;
@@ -105,8 +110,6 @@ function readNumericCellValue(sheetXml: string, ref: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** 셀의 캐시된 <v> 값이 정확히 "N/A"인지 확인. 수식 소스(<f>) 자이에는 IF(...,"N/A",..)와 같이
- * "N/A" 문자열이 포함되어 있을 수 있으뫀롌이띴, 반드시 <v> 결과값만 확인해야 한다 */
 function isNACell(sheetXml: string, ref: string): boolean {
   const c = getCellRaw(sheetXml, ref);
   if (!c) return false;
@@ -188,11 +191,6 @@ function clearCell(sheetXml: string, ref: string): string {
   return sheetXml.replace(rb.full, `${rb.open}${newContent}${rb.close}`);
 }
 
-/**
- * 서류부문 항목의 등급티어 조회: row, row+1, row+2 세 줄에 0/중/만점 등급이 있다.
- * row+2(만점 참조셀)가 "N/A"면 이 항목은 H6/H50/H87 백분율 분부에서 제외되뱀이부디,
- * 점수를 0으로 둔뛌 이 구조롬해야 한다 (아니면 백분율이 100%를 초과함).
- */
 function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: number; notApplicable: boolean } {
   if (isNACell(sheetXml, `E${row + 2}`)) return { max: 0, mid: 0, notApplicable: true };
   const e0 = readNumericCellValue(sheetXml, `E${row}`);
@@ -204,22 +202,14 @@ function getDocItemTiers(sheetXml: string, row: number): { max: number; mid: num
   return { max: sorted[sorted.length - 1], mid: sorted[Math.floor(sorted.length / 2)], notApplicable: false };
 }
 
-/** 해당 시트의 모든 수식 셀에서 캠시된 <v> 결과를 제거 (수식은 유지) — 열 래 강제 장제로 재강산되게 함 */
 function stripFormulaCache(sheetXml: string): string {
   return sheetXml.replace(/(<c[^>]*>)(<f>[\s\S]*?<\/f>)<v>[^<]*<\/v>(<\/c>)/g, "$1$2$3");
 }
 
-/**
- * 엑셀 전용 SUM((A1,A2,...)) 유니울 문법을 구귀시트 호환 SUM(A1,A2,...)로 바꿜다.
- */
 function fixGoogleSheetsCompat(sheetXml: string): string {
   return sheetXml.replace(/SUM\(\(((?:[A-Z]+\d+,?)+)\)\)/g, "SUM($1)");
 }
 
-/**
- * styles.xml의 cellXfs에서 baseIndex 스타일을 기반으로 wrapText=1이 추가된 새 스타일을 만들어 말한다.
- * 이보 폰트·타례롔·채우면 육지하며 alignment에 wrapText만 추가한다. 결과는 캐시해 중복 생성을 피한다.
- */
 function ensureWrapTextStyle(
   stylesXml: string,
   baseIndex: number,
@@ -307,7 +297,7 @@ export async function generateRegularXlsx(
     return setCellSharedString(sheetXml, ref, r.idx);
   }
 
-  // ── 1. 평가 결과 시트 — 일반 입력값만 쓴다. D13/F13/I13/L13/O13(수식)은 절대 건드리지 않아 ──
+  // ── 1. 평가 결과 시트 — 일반 입력값과 보정계수 하위 3건만 쓴다. D13/F13/I13/L13/O13(수식)은 절대 건드리지 않아 ──
   const s1Path = sheetPath["평가 결과"];
   let s1 = "";
   if (s1Path && zip.file(s1Path)) {
@@ -320,6 +310,10 @@ export async function generateRegularXlsx(
     s1 = setCellNumber(s1, "C9", amountNum);
     s1 = writeText(s1, "F9", data.constructionPeriod);
     s1 = writeText(s1, "J9", data.managerInfo);
+    // 보정계수(O13) 하위 3건 — 입력되자마자 O13=SUM(P15:P17)/3 수식이 자동 계산
+    s1 = setCellNumber(s1, "P15", parseFloat(data.monthlyProgressFactor ?? "1") || 1);
+    s1 = setCellNumber(s1, "P16", parseFloat(data.riskWorkFactor ?? "1") || 1);
+    s1 = setCellNumber(s1, "P17", parseFloat(data.helperOperationFactor ?? "1") || 1);
   }
 
   // ── 2. 안전보건 현장부문 시트 — 전원 리셋('지적없음' 기본값) 후, 같은 항목에 매징된 지적사항은 합쳐서 기록 ──
@@ -349,7 +343,7 @@ export async function generateRegularXlsx(
       const col = grade === "위험" ? "F" : "E";
       const val = grade === "위험" ? 2 : 1;
       s3 = setCellNumber(s3, `${col}${row}`, val);
-      const combined = await combineFindingTexts(texts, 60); // 현장부문 G열(돈 35.89, 바다)는 여유가 끴해서 대떨 좀더 너과롱다
+      const combined = await combineFindingTexts(texts, 60);
       s3 = writeText(s3, `G${row}`, combined);
     }
   }
@@ -383,7 +377,6 @@ export async function generateRegularXlsx(
 
       const combined = await combineFindingTexts(texts, DOC_OPINION_TOTAL_CHARS);
 
-      // 줄바꿈(wrapText)이 적용된 스타일인지 확인하고, 아니면 해당 셀의 기존 스타일을 원본으로 새 스타일 생성
       const curStyleIdx = getCellStyleIndex(s2, `H${row}`);
       const { xml: newStylesXml, index: wrappedIdx } = ensureWrapTextStyle(stylesXml, curStyleIdx, wrapStyleCache);
       stylesXml = newStylesXml;
